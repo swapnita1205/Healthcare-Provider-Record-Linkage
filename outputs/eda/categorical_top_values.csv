@@ -1,0 +1,103 @@
+dataset,col,value,count
+providers_a,state,CA,4869
+providers_a,state,NY,4207
+providers_a,state,TX,4124
+providers_a,state,FL,4030
+providers_a,state,PA,3037
+providers_a,state,IL,2434
+providers_a,state,OH,2433
+providers_a,state,MI,2143
+providers_a,state,NC,2037
+providers_a,state,MA,1834
+providers_a,state,NJ,1833
+providers_a,state,GA,1702
+providers_a,state,VA,1566
+providers_a,state,TN,1370
+providers_a,state,MN,1356
+providers_a,provider_type,NURSE PRACTITIONER,8881
+providers_a,provider_type,PHYSICIAN ASSISTANT,4931
+providers_a,provider_type,INTERNAL MEDICINE,4616
+providers_a,provider_type,FAMILY PRACTICE,4016
+providers_a,provider_type,PHYSICAL THERAPIST IN PRIVATE PRACTICE,3859
+providers_a,provider_type,EMERGENCY MEDICINE,2388
+providers_a,provider_type,CERTIFIED REGISTERED NURSE ANESTHETIST CRNA,2039
+providers_a,provider_type,ANESTHESIOLOGY,1739
+providers_a,provider_type,CHIROPRACTIC,1724
+providers_a,provider_type,DIAGNOSTIC RADIOLOGY,1594
+providers_a,provider_type,OPTOMETRY,1538
+providers_a,provider_type,MASS IMMUNIZER ROSTER BILLER,1504
+providers_a,provider_type,ORTHOPEDIC SURGERY,1052
+providers_a,provider_type,CARDIOLOGY,1025
+providers_a,provider_type,PSYCHIATRY,977
+providers_b,state,TX,10120
+providers_b,state,FL,9753
+providers_b,state,CA,8322
+providers_b,state,NY,6592
+providers_b,state,PA,4294
+providers_b,state,NC,4203
+providers_b,state,GA,4153
+providers_b,state,OH,4104
+providers_b,state,IL,3709
+providers_b,state,MI,3613
+providers_b,state,NJ,3281
+providers_b,state,VA,2866
+providers_b,state,TN,2801
+providers_b,state,IN,2772
+providers_b,state,AZ,2728
+providers_b,specialty_1,PHYSICIAN ASSISTANTS  ADVANCED PRACTICE NURSING PROVIDERSNURSE PRACTITIONERFAMILY,10266
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSINTERNAL MEDICINE,6620
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSFAMILY MEDICINE,6497
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSPEDIATRICS,6395
+providers_b,specialty_1,PHYSICIAN ASSISTANTS  ADVANCED PRACTICE NURSING PROVIDERSPHYSICIAN ASSISTANT,6375
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSINTERNAL MEDICINECARDIOVASCULAR DISEASE,6160
+providers_b,specialty_1,PHYSICIAN ASSISTANTS  ADVANCED PRACTICE NURSING PROVIDERSNURSE PRACTITIONER,5022
+providers_b,specialty_1,PHYSICIAN ASSISTANTS  ADVANCED PRACTICE NURSING PROVIDERSNURSE PRACTITIONERPSYCHIATRICMENTAL HEALTH,3923
+providers_b,specialty_1,DENTAL PROVIDERSDENTISTGENERAL PRACTICE,3357
+providers_b,specialty_1,DENTAL PROVIDERSDENTIST,3287
+providers_b,specialty_1,DENTAL PROVIDERSDENTISTORTHODONTICS AND DENTOFACIAL ORTHOPEDICS,3083
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSPSYCHIATRY  NEUROLOGYPSYCHIATRY,2654
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSOBSTETRICS  GYNECOLOGY,2650
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSINTERNAL MEDICINEINTERVENTIONAL CARDIOLOGY,2573
+providers_b,specialty_1,ALLOPATHIC  OSTEOPATHIC PHYSICIANSINTERNAL MEDICINEPULMONARY DISEASE,2524
+providers_b,primary_type_1,MEDICAL DOCTOR,51541
+providers_b,primary_type_1,NURSE PRACTITIONER,25421
+providers_b,primary_type_1,DOCTOR OF DENTISTRY,10350
+providers_b,primary_type_1,PHYSICIAN ASSISTANT,8917
+providers_b,primary_type_1,DOCTOR OF OSTEOPATHY,5451
+providers_b,primary_type_1,DOCTOR OF PODIATRIC MEDICINE,1597
+providers_b,primary_type_1,DOCTOR OF OPTOMETRY,1099
+providers_b,primary_type_1,CERTIFIED REGISTERED NURSE ANESTHETIST,360
+providers_b,primary_type_1,CLINICAL NURSE SPECIALIST,270
+providers_b,primary_type_1,CERTIFIED NURSEMIDWIFE,163
+providers_b,primary_type_1,CHIROPRACTOR,30
+providers_b,primary_type_1,ANESTHESIOLOGIST ASSISTANT,4
+providers_c,state,CA,227147
+providers_c,state,NY,173602
+providers_c,state,TX,167928
+providers_c,state,FL,151819
+providers_c,state,PA,107845
+providers_c,state,IL,94672
+providers_c,state,OH,92183
+providers_c,state,MI,88232
+providers_c,state,NC,76156
+providers_c,state,MA,71536
+providers_c,state,NJ,67820
+providers_c,state,GA,66894
+providers_c,state,WA,53025
+providers_c,state,TN,50038
+providers_c,state,MN,49716
+providers_c,provider_type_desc,PRACTITIONER  NURSE PRACTITIONER,311412
+providers_c,provider_type_desc,PART B SUPPLIER  CLINICGROUP PRACTICE,209588
+providers_c,provider_type_desc,PRACTITIONER  PHYSICIAN ASSISTANT,151403
+providers_c,provider_type_desc,PRACTITIONER  INTERNAL MEDICINE,117021
+providers_c,provider_type_desc,PRACTITIONER  FAMILY PRACTICE,110544
+providers_c,provider_type_desc,PRACTITIONER  PHYSICAL THERAPIST IN PRIVATE PRACTICE,109171
+providers_c,provider_type_desc,PRACTITIONER  CLINICAL SOCIAL WORKER,86601
+providers_c,provider_type_desc,PRACTITIONER  EMERGENCY MEDICINE,60189
+providers_c,provider_type_desc,PRACTITIONER  CERTIFIED REGISTERED NURSE ANESTHETIST CRNA,57737
+providers_c,provider_type_desc,PRACTITIONER  PEDIATRIC MEDICINE,50453
+providers_c,provider_type_desc,PRACTITIONER  CHIROPRACTIC,50190
+providers_c,provider_type_desc,PRACTITIONER  ANESTHESIOLOGY,48683
+providers_c,provider_type_desc,PRACTITIONER  OPTOMETRY,45209
+providers_c,provider_type_desc,DME SUPPLIER  PHARMACY,42047
+providers_c,provider_type_desc,PRACTITIONER  OBSTETRICSGYNECOLOGY,41795

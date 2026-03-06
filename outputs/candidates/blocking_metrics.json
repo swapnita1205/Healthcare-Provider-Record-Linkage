@@ -1,0 +1,17 @@
+{
+  "ac_exact_npi_pairs": 60317,
+  "ba_pairs_final": 1937864,
+  "bc_pairs_final": 4069046,
+  "WINDOW": 50,
+  "ZIP_BLOCK_CAP": 500,
+  "LAST_BLOCK_CAP": 2000,
+  "CANOPY_T1": 0.6,
+  "CANOPY_T2": 0.8,
+  "LSH_NUM_PERM": 64,
+  "LSH_BANDS": 8,
+  "n_providers_a": 60751,
+  "n_providers_b": 105203,
+  "n_providers_c": 2391071,
+  "gold_ba_pairs": 3345,
+  "gold_bc_pairs": 85539
+}

@@ -1,0 +1,20 @@
+{
+  "A": "best_saved",
+  "B": "grad_boost",
+  "pr_auc": {
+    "metric": "pr_auc",
+    "diff_mean": 0.00498818781076858,
+    "diff_p025": 0.0034193578021513875,
+    "diff_p975": 0.006730153442370563,
+    "p_value_two_sided": 0.0,
+    "n_boot_used": 400
+  },
+  "roc_auc": {
+    "metric": "roc_auc",
+    "diff_mean": 9.173995826845998e-05,
+    "diff_p025": 1.938975282455291e-05,
+    "diff_p975": 0.0001779576356096434,
+    "p_value_two_sided": 0.0,
+    "n_boot_used": 400
+  }
+}

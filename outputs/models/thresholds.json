@@ -1,0 +1,8 @@
+{
+  "best_model": "grad_boost",
+  "thresholds": {
+    "target_precision": 0.95,
+    "best_f1_threshold": 0.455301107974215,
+    "precision_target_threshold": 0.018144461144874027
+  }
+}

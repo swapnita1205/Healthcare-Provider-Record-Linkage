@@ -1,0 +1,49 @@
+col,strategy,details,dataset
+street2,Keep missing as signal,Add is_missing flag; for categoricals use 'MISSING' token; avoid aggressive imputation.,providers_a
+middle_name,Keep missing as signal,Add is_missing flag; for categoricals use 'MISSING' token; avoid aggressive imputation.,providers_a
+credentials,Light imputation + flag,Median for numeric / mode for categorical + is_missing flag.,providers_a
+zip5,Light imputation + flag,Median for numeric / mode for categorical + is_missing flag.,providers_a
+first_name,Light imputation + flag,Median for numeric / mode for categorical + is_missing flag.,providers_a
+npi,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+last_or_org_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+street1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+city,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+state,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+provider_type,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+n_unique_hcpcs,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+sum_benes,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+sum_srvcs,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+mean_avg_std_amt,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+n_unique_street1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+n_unique_city,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+n_unique_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_a
+suffix,Keep missing as signal,Add is_missing flag; for categoricals use 'MISSING' token; avoid aggressive imputation.,providers_b
+street2,Keep missing as signal,Add is_missing flag; for categoricals use 'MISSING' token; avoid aggressive imputation.,providers_b
+middle_name,Keep missing as signal,Add is_missing flag; for categoricals use 'MISSING' token; avoid aggressive imputation.,providers_b
+npi,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+zip5,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+state,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+last_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+first_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+street1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+city,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+profile_id,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+specialty_1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+primary_type_1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+license_state_1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+n_payment_rows,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+sum_payment_amount,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+mean_payment_amount,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+n_years,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+n_unique_street1,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+n_unique_city,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+n_unique_last_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_b
+npi,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+first_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+middle_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+last_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+org_name,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+state,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+provider_type_cd,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+provider_type_desc,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c
+n_unique_provider_type_desc,Simple fill,Mode (categorical) / median (numeric) if needed; missing likely non-informative.,providers_c

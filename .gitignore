@@ -1,0 +1,8 @@
+.ipynb_checkpoints/
+.pytest_cache/
+.pycache_tmp/
+data
+myenv
+notebooks
+report
+Storage
