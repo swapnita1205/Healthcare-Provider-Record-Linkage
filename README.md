@@ -193,5 +193,5 @@ Then open:
   Run `python scripts/ingest.py` (or `python main.py --steps ingest`).
 
 - **No matches returned from API**  
-  Check that incoming `state`/`zip5` are present and well-formatted; blocking uses state + zip3 first.
+  Check that incoming `state`/`zip5` are present and well-formatted; blocking uses state + zip5 first.
 
