@@ -9,8 +9,8 @@ import polars as pl
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression, SGDClassifier
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
     precision_recall_curve,
@@ -44,7 +44,7 @@ MAX_TRAIN_ROWS = 1_200_000
 N_SPLITS = 3
 N_ITER_LR = 12
 N_ITER_GB = 16
-N_ITER_SGD = 14
+N_ITER_RF = 12
 
 # Active learning
 UNLABELED_SAMPLE = 400_000
@@ -231,26 +231,22 @@ lr = Pipeline([
     ("clf", LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs")),
 ])
 
-# SGD logistic regression
-sgd = Pipeline([
-    ("scaler", StandardScaler(with_mean=True, with_std=True)),
-    ("clf", SGDClassifier(
-        loss="log_loss",
-        penalty="elasticnet",
-        class_weight="balanced",
-        random_state=RANDOM_STATE,
-        max_iter=2000,
-        tol=1e-4,
-    )),
-])
+# Random Forest — no scaling needed (trees are scale-invariant)
+rf = RandomForestClassifier(
+    class_weight="balanced",
+    random_state=RANDOM_STATE,
+    n_jobs=2,
+)
 
 # Gradient Boosting
 gb = HistGradientBoostingClassifier(random_state=RANDOM_STATE)
 
 param_space_lr = {"clf__C": np.logspace(-3, 2, 15)}
-param_space_sgd = {
-    "clf__alpha": np.logspace(-6, -3, 12),
-    "clf__l1_ratio": [0.0, 0.15, 0.5, 0.85, 1.0],
+param_space_rf = {
+    "n_estimators": [100, 200, 400],
+    "max_depth": [None, 10, 20],
+    "min_samples_leaf": [1, 5, 20],
+    "max_features": ["sqrt", "log2", 0.5],
 }
 param_space_gb = {
     "learning_rate": [0.03, 0.06, 0.1],
@@ -276,15 +272,15 @@ def fit_search(estimator, params, n_iter, name: str, n_jobs: int):
 print("=== LR HPO ===")
 lr_search = fit_search(lr, param_space_lr, N_ITER_LR, "lr", n_jobs=2)
 
-print("=== SGD(log-loss) HPO ===")
-sgd_search = fit_search(sgd, param_space_sgd, N_ITER_SGD, "sgd", n_jobs=2)
+print("=== Random Forest HPO ===")
+rf_search = fit_search(rf, param_space_rf, N_ITER_RF, "rf", n_jobs=2)
 
 print("=== GB HPO ===")
 gb_search = fit_search(gb, param_space_gb, N_ITER_GB, "gb", n_jobs=2)
 
 searches = {
     "logreg": lr_search,
-    "sgd_logloss": sgd_search,
+    "random_forest": rf_search,
     "grad_boost": gb_search,
 }
 
@@ -292,7 +288,8 @@ searches = {
 def maybe_calibrate(name: str, estimator):
     if not CALIBRATE_LINEAR_MODELS:
         return estimator
-    if name in ("logreg", "sgd_logloss"):
+    # only calibrate linear models; RF and GB have native predict_proba
+    if name == "logreg":
         return CalibratedClassifierCV(estimator, method="sigmoid", cv=3)
     return estimator
 
@@ -327,7 +324,7 @@ for name, search in searches.items():
         "holdout_recall_at_prec_target": m_prec["recall"],
         "best_f1_threshold": thr["best_f1_threshold"],
         "precision_target_threshold": thr["precision_target_threshold"],
-        "calibrated": bool(CALIBRATE_LINEAR_MODELS and name in ("logreg", "sgd_logloss")),
+        "calibrated": bool(CALIBRATE_LINEAR_MODELS and name == "logreg"),
     })
 
     details[name] = {
@@ -364,7 +361,7 @@ metrics_out = {
     "train_rows": int(len(train_pdf)),
     "pos_rate_train": float(y.mean()),
     "best_model": best_model_name,
-    "calibrated": bool(CALIBRATE_LINEAR_MODELS and best_model_name in ("logreg", "sgd_logloss")),
+    "calibrated": bool(CALIBRATE_LINEAR_MODELS and best_model_name == "logreg"),
     "holdout": {
         "best_f1": metrics_at(y_test, best_scores, best_thr["best_f1_threshold"]),
         "precision_target": metrics_at(y_test, best_scores, best_thr["precision_target_threshold"]),
@@ -400,30 +397,95 @@ pd.DataFrame({
 }).sort_values("perm_importance_mean", ascending=False)\
   .to_csv(MODEL_DIR / "feature_importance_best_model.csv", index=False)
   
-# -----------------------------
-# Active learning queue
-# -----------------------------
+# -------------------------------------------------------
+# Active Learning Loop
+# -------------------------------------------------------
+# Simulates iterative human-in-the-loop labeling.
+# We treat the NPI weak labels as a stand-in oracle
+# (in production these would come from human reviewers).
+#
+# Strategy: start with a small seed set, then at each round
+# ask the oracle to label the pairs the model is most
+# uncertain about (closest to the 0.5 decision boundary).
+# This is standard uncertainty / margin sampling.
+# -------------------------------------------------------
+
+AL_ITERS = 3
+AL_QUERY_PER_ITER = 100
+
+rng_al = np.random.default_rng(RANDOM_STATE + 10)
+all_idx = np.arange(len(X))
+pos_idx = np.where(y == 1)[0]
+neg_idx = np.where(y == 0)[0]
+
+# Seed: 15% of positives + 3× that many negatives
+seed_n = max(30, int(0.15 * len(pos_idx)))
+seed_pos = rng_al.choice(pos_idx, size=min(seed_n, len(pos_idx)), replace=False)
+seed_neg = rng_al.choice(neg_idx, size=min(seed_n * 3, len(neg_idx)), replace=False)
+al_labeled = np.concatenate([seed_pos, seed_neg])
+al_pool = np.setdiff1d(all_idx, al_labeled)
+
+# Use a fast LogisticRegression for the AL loop (not the final best model)
+al_clf = Pipeline([
+    ("scaler", StandardScaler()),
+    ("clf", LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs")),
+])
+
+al_history = []
+print("\n=== Active Learning Loop ===")
+for al_round in range(AL_ITERS):
+    al_clf.fit(X[al_labeled], y[al_labeled])
+    al_scores = al_clf.predict_proba(X_test)[:, 1]
+    al_pr_auc = float(average_precision_score(y_test, al_scores))
+    al_f1 = float(f1_score(y_test, (al_scores >= 0.5).astype(int), zero_division=0))
+
+    al_history.append({
+        "round": al_round,
+        "labeled_size": int(len(al_labeled)),
+        "n_positives": int((y[al_labeled] == 1).sum()),
+        "val_pr_auc": al_pr_auc,
+        "val_f1": al_f1,
+    })
+    print(f"  round {al_round}: labeled={len(al_labeled)}, PR-AUC={al_pr_auc:.4f}, F1={al_f1:.4f}")
+
+    if len(al_pool) == 0:
+        break
+
+    # Query: pick pairs nearest the decision boundary from the unlabeled pool
+    pool_scores = al_clf.predict_proba(X[al_pool])[:, 1]
+    uncertainty = np.abs(pool_scores - 0.5)
+    n_query = min(AL_QUERY_PER_ITER, len(al_pool))
+    queried = al_pool[np.argsort(uncertainty)[:n_query]]
+
+    al_labeled = np.concatenate([al_labeled, queried])
+    al_pool = np.setdiff1d(al_pool, queried)
+
+pd.DataFrame(al_history).to_csv(MODEL_DIR / "active_learning_curve.csv", index=False)
+print("Active learning curve saved:", MODEL_DIR / "active_learning_curve.csv")
+
+# Also export the current uncertainty queue from the full unlabeled pool
+# (pairs without any NPI-based label — candidates for human review)
 unlabeled = df_scan.filter(pl.col("label_weak_npi").is_null()).drop("label_weak_npi")
 unl_sample = lazy_sample_n(unlabeled, UNLABELED_SAMPLE, RANDOM_STATE).collect(streaming=True)
 unl_pdf = unl_sample.to_pandas()
 X_unl = unl_pdf[feature_cols].values
 
 unl_scores = safe_predict_proba(best_model, X_unl)
-uncertainty = np.abs(unl_scores - 0.5)
+uncertainty_unl = np.abs(unl_scores - 0.5)
 
-idx_unc = np.argsort(uncertainty)[: int(ACTIVE_QUERY_N * 0.6)]
-idx_hi = np.argsort(-unl_scores)[: int(ACTIVE_QUERY_N * 0.2)]
-idx_lo = np.argsort(unl_scores)[: int(ACTIVE_QUERY_N * 0.2)]
-idx_q = np.unique(np.concatenate([idx_unc, idx_hi, idx_lo]))[:ACTIVE_QUERY_N]
+idx_unc = np.argsort(uncertainty_unl)[: int(ACTIVE_QUERY_N * 0.6)]
+idx_hi  = np.argsort(-unl_scores)[: int(ACTIVE_QUERY_N * 0.2)]
+idx_lo  = np.argsort(unl_scores)[: int(ACTIVE_QUERY_N * 0.2)]
+idx_q   = np.unique(np.concatenate([idx_unc, idx_hi, idx_lo]))[:ACTIVE_QUERY_N]
 
 queue = unl_pdf.iloc[idx_q].copy()
 queue["score"] = unl_scores[idx_q]
-queue["uncertainty"] = uncertainty[idx_q]
+queue["uncertainty"] = uncertainty_unl[idx_q]
 queue[["profile_id", "candidate_npi", "pair_type", "pass", "block_key", "score", "uncertainty"]].to_csv(
     MODEL_DIR / "active_learning_queue.csv", index=False
 )
 
-print("Saved outputs to:", MODEL_DIR)
+print("\nSaved outputs to:", MODEL_DIR)
 print("Best model:", best_model_name)
 print("Train rows used:", len(train_pdf), "Pos rate:", y.mean())
 print("Model comparison:", MODEL_DIR / "all_models_results.csv")

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import polars as pl
 from fastapi.testclient import TestClient
@@ -22,27 +20,28 @@ class DummyModel:
 
 
 def _ensure_runtime_state() -> None:
-    """Ensure app state has provider data/model when artifacts are missing."""
-    if api.app.state.providers_a.height == 0:
-        api.app.state.providers_a = pl.DataFrame(
-            {
-                "npi": ["1234567890", "9999999999"],
-                "first_name": ["John", "Alice"],
-                "last_or_org_name": ["Smith", "Medical Group"],
-                "state": ["TX", "CA"],
-                "zip5": ["78701", "90210"],
-                "street1": ["123 Main St", "1 Sunset Blvd"],
-                "city": ["Austin", "Beverly Hills"],
-                "credentials": ["MD", ""],
-            }
-        )
-        api.app.state.idf_name = {"JOHN": 1.0, "SMITH": 1.0, "ALICE": 1.0}
+    """Inject deterministic in-memory state so tests never rely on disk artifacts.
 
-    model_path = Path("outputs/models/best_model.joblib")
-    if not model_path.exists():
-        api.app.state.model = DummyModel()
-        api.app.state.model_loaded = True
-        api.app.state.model_name = "dummy_model_for_tests"
+    Always installs the DummyModel — the saved joblib may have been trained on
+    a different feature count (e.g. before new features were added), so we must
+    not let tests depend on whatever happens to be in outputs/.
+    """
+    api.app.state.providers_a = pl.DataFrame(
+        {
+            "npi": ["1234567890", "9999999999"],
+            "first_name": ["John", "Alice"],
+            "last_or_org_name": ["Smith", "Medical Group"],
+            "state": ["TX", "CA"],
+            "zip5": ["78701", "90210"],
+            "street1": ["123 Main St", "1 Sunset Blvd"],
+            "city": ["Austin", "Beverly Hills"],
+            "credentials": ["MD", ""],
+        }
+    )
+    api.app.state.idf_name = {"JOHN": 1.0, "SMITH": 1.0, "ALICE": 1.0}
+    api.app.state.model = DummyModel()
+    api.app.state.model_loaded = True
+    api.app.state.model_name = "dummy_model_for_tests"
 
 
 def test_health_returns_200() -> None:

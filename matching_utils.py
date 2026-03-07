@@ -81,6 +81,8 @@ FEATURE_COLUMNS: list[str] = [
     "miss_x_city",
     "miss_x_state",
     "miss_x_zip5",
+    "sim_zip_num",
+    "n_years_b",
 ]
 
 
@@ -139,6 +141,23 @@ def zip3(value: str | None) -> str:
     """Return the first 3 zip digits from normalized zip."""
     txt = norm(value)
     return txt[:3] if len(txt) >= 3 else ""
+
+
+def zip_num_sim(a: str | None, b: str | None) -> float:
+    """Fuzzy numeric ZIP comparison — treats ZIP as an integer.
+    Nearby ZIP codes score near 1.0; far-apart ones near 0.0.
+    A gap of 10,000 (e.g. 10001 vs 20001) maps to 0.
+    """
+    try:
+        na_s = norm(a)
+        nb_s = norm(b)
+        na = int(na_s[:5]) if len(na_s) >= 5 else -1
+        nb = int(nb_s[:5]) if len(nb_s) >= 5 else -1
+    except ValueError:
+        return 0.0
+    if na < 0 or nb < 0:
+        return 0.0
+    return float(max(0.0, 1.0 - abs(na - nb) / 10_000))
 
 
 def jaro_similarity(s1: str | None, s2: str | None) -> float:
@@ -467,6 +486,14 @@ def features_row(row: dict[str, Any], idf_name: dict[str, float]) -> dict[str, f
     suf_x = norm(x_suf) or suffix_token(x_full)
     suffix_match = int(bool(suf_b) and bool(suf_x) and suf_b == suf_x)
 
+    # fuzzy numeric ZIP: continuous proximity beyond exact/zip3 matching
+    sim_zip_num_val = zip_num_sim(b_zip, x_zip)
+
+    # temporal: years of payment activity for the B provider, normalized to [0,1]
+    # defaults to 0.0 at inference time when n_years is not in the incoming request
+    raw_years = row.get("b_n_years") or 0.0
+    n_years_b_val = min(float(raw_years), 20.0) / 20.0
+
     return {
         "sim_jw_fullname": float(jw_full),
         "sim_jw_lastname": float(jw_last),
@@ -499,6 +526,8 @@ def features_row(row: dict[str, Any], idf_name: dict[str, float]) -> dict[str, f
         "miss_x_city": miss(x_city),
         "miss_x_state": miss(x_state),
         "miss_x_zip5": miss(x_zip),
+        "sim_zip_num": float(sim_zip_num_val),
+        "n_years_b": float(n_years_b_val),
     }
 
 

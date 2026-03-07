@@ -65,6 +65,13 @@ FEATURE_STRUCT = pl.Struct([
     pl.Field("miss_x_city", pl.Int8),
     pl.Field("miss_x_state", pl.Int8),
     pl.Field("miss_x_zip5", pl.Int8),
+
+    # --- fuzzy numeric + temporal ---
+    # zip_num_sim: continuous geographic proximity (goes beyond exact/zip3 match)
+    pl.Field("sim_zip_num", pl.Float64),
+    # n_years_b: how many years of payment activity on the B side (normalized 0-1)
+    # acts as a temporal signal about how established/active the B provider is
+    pl.Field("n_years_b", pl.Float64),
 ])
 
 # -----------------------------
@@ -115,6 +122,20 @@ def first_initial(s: str) -> str:
 def zip3(z: str) -> str:
     z = norm(z)
     return z[:3] if len(z) >= 3 else ""
+
+def zip_num_sim(a: str, b: str) -> float:
+    """Fuzzy numeric ZIP comparison — treats ZIP as an integer.
+    Nearby ZIP codes (e.g. 10001 vs 10003) score near 1.0;
+    far-apart ones score near 0.0. Gap of 10,000 maps to 0.
+    """
+    try:
+        na = int(norm(a)[:5]) if len(norm(a)) >= 5 else -1
+        nb = int(norm(b)[:5]) if len(norm(b)) >= 5 else -1
+    except ValueError:
+        return 0.0
+    if na < 0 or nb < 0:
+        return 0.0
+    return float(max(0.0, 1.0 - abs(na - nb) / 10_000))
 
 # ============================================================
 # Jaro-Winkler
@@ -409,7 +430,7 @@ def overlap_ratio(a: set[str], b: set[str]) -> float:
 # ============================================================
 # Row-wise feature function
 # ============================================================
-def features_row(row: dict) -> dict:
+def features_row(row: dict) -> dict:  # noqa: C901
     b_first = row.get("b_first") or ""
     b_last  = row.get("b_last") or ""
     x_first = row.get("x_first") or ""
@@ -481,6 +502,13 @@ def features_row(row: dict) -> dict:
     suf_x = norm(x_suf) or suffix_token(x_full)
     suffix_match = int(bool(suf_b) and bool(suf_x) and suf_b == suf_x)
 
+    # fuzzy numeric ZIP: continuous proximity beyond exact/zip3 matching
+    sim_zip_num_val = zip_num_sim(b_zip, x_zip)
+
+    # temporal: years of payment activity for the B provider, capped at 20 and normalized to [0,1]
+    raw_years = row.get("b_n_years") or 0.0
+    n_years_b_val = min(float(raw_years), 20.0) / 20.0
+
     return {
         "sim_jw_fullname": float(jw_full),
         "sim_jw_lastname": float(jw_last),
@@ -519,6 +547,9 @@ def features_row(row: dict) -> dict:
         "miss_x_city": miss(x_city),
         "miss_x_state": miss(x_state),
         "miss_x_zip5": miss(x_zip),
+
+        "sim_zip_num": float(sim_zip_num_val),
+        "n_years_b": float(n_years_b_val),
     }
 
 # ============================================================
@@ -536,6 +567,7 @@ ba = (
             pl.col("city").alias("b_city"),
             pl.col("state").alias("b_state"),
             pl.col("zip5").alias("b_zip5"),
+            pl.col("n_years").cast(pl.Float64).fill_null(0.0).alias("b_n_years"),
         ]),
         on="profile_id",
         how="left",
@@ -579,7 +611,7 @@ ba_feats = (
     ba.with_columns([
         pl.struct([
             "b_first","b_last","b_suffix","b_cred",
-            "b_street1","b_city","b_state","b_zip5",
+            "b_street1","b_city","b_state","b_zip5","b_n_years",
             "x_first","x_last","x_suffix","x_cred",
             "x_street1","x_city","x_state","x_zip5",
         ]).map_elements(features_row, return_dtype=FEATURE_STRUCT).alias("feat")
@@ -609,6 +641,7 @@ bc = (
             pl.col("city").alias("b_city"),
             pl.col("state").alias("b_state"),
             pl.col("zip5").alias("b_zip5"),
+            pl.col("n_years").cast(pl.Float64).fill_null(0.0).alias("b_n_years"),
         ]),
         on="profile_id",
         how="left",
@@ -648,7 +681,7 @@ bc_feats = (
     bc.with_columns([
         pl.struct([
             "b_first","b_last","b_suffix","b_cred",
-            "b_street1","b_city","b_state","b_zip5",
+            "b_street1","b_city","b_state","b_zip5","b_n_years",
             "x_first","x_last","x_suffix","x_cred",
             "x_street1","x_city","x_state","x_zip5",
         ]).map_elements(features_row, return_dtype=FEATURE_STRUCT).alias("feat")
