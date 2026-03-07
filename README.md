@@ -39,7 +39,13 @@ pip install fastapi uvicorn pytest
 
 ## 3) Data Placement
 
-Place raw source files under `data/` (as expected by `scripts/ingest.py`).
+Download the data from: https://drive.google.com/file/d/13KBEpDKeCme_IpvBYtFvsYBkIApulwrb/view?usp=drive_link
+
+Place raw source files under `data/` (as expected by `scripts/ingest.py`) using: 
+
+```bash
+unzip data.zip
+```
 
 Then run:
 
