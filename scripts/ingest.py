@@ -24,6 +24,7 @@ def normalize_zip(col: str) -> pl.Expr:
 
 def normalize_npi(col: str) -> pl.Expr:
     return pl.col(col).cast(pl.Utf8).str.extract(r"(\d{10})", 1)
+
 # --------------------------
 # Dataset A -> providers_a (1 row per NPI)
 # --------------------------
@@ -69,18 +70,18 @@ providers_a = (
         pl.first("zip5").alias("zip5"),
         pl.first("provider_type").alias("provider_type"),
 
-        # evidence/aggregation features (useful later)
+        # evidence/aggregation features
         pl.n_unique("hcpcs_cd").alias("n_unique_hcpcs"),
         pl.sum("tot_benes").alias("sum_benes"),
         pl.sum("tot_srvcs").alias("sum_srvcs"),
         pl.mean("avg_std_amt").alias("mean_avg_std_amt"),
 
-        # drift indicators (EDA + later features)
         pl.n_unique("street1").alias("n_unique_street1"),
         pl.n_unique("city").alias("n_unique_city"),
         pl.n_unique("last_or_org_name").alias("n_unique_name"),
      ])
 )
+
 # --------------------------
 # Dataset B -> providers_b (1 row per Profile_ID, NPI optional)
 # --------------------------
@@ -130,13 +131,12 @@ providers_b = (
         pl.first("primary_type_1").alias("primary_type_1"),
         pl.first("license_state_1").alias("license_state_1"),
 
-        # payment evidence (useful later)
+        # payment evidence
         pl.len().alias("n_payment_rows"),
         pl.sum("payment_amount").alias("sum_payment_amount"),
         pl.mean("payment_amount").alias("mean_payment_amount"),
         pl.n_unique("program_year").alias("n_years"),
 
-        # drift indicators
         pl.n_unique("street1").alias("n_unique_street1"),
         pl.n_unique("city").alias("n_unique_city"),
         pl.n_unique("last_name").alias("n_unique_last_name"),

@@ -1,5 +1,3 @@
-"""Pipeline runner for provider record linkage project."""
-
 from __future__ import annotations
 
 import argparse
@@ -28,7 +26,6 @@ class StepResult:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for step selection."""
     parser = argparse.ArgumentParser(description="Run linkage pipeline scripts in order.")
     parser.add_argument(
         "--skip-eda",
@@ -50,7 +47,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_steps(args: argparse.Namespace) -> list[str]:
-    """Resolve final step list from CLI filters."""
     if args.steps:
         requested = [s.strip() for s in args.steps.split(",") if s.strip()]
         unknown = sorted(set(requested) - set(PIPELINE_STEPS))
@@ -132,7 +128,6 @@ def print_summary(results: list[StepResult]) -> None:
 
 
 def main() -> int:
-    """Entry point for the pipeline runner."""
     args = parse_args()
     try:
         steps = resolve_steps(args)

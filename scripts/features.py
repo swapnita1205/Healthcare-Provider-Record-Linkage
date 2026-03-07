@@ -9,6 +9,7 @@ OUT_DIR = Path("outputs")
 CAND_DIR = OUT_DIR / "candidates"
 FEAT_DIR = OUT_DIR / "features"
 FEAT_DIR.mkdir(parents=True, exist_ok=True)
+
 # -----------------------------
 # Load provider tables + candidates
 # -----------------------------
@@ -18,39 +19,39 @@ pc = pl.read_parquet(OUT_DIR / "providers_c.parquet")
 
 cand_ba = pl.read_parquet(CAND_DIR / "cand_ba.parquet")
 cand_bc = pl.read_parquet(CAND_DIR / "cand_bc.parquet")
+
 # ============================================================
-# Feature schema (extended)
+# Feature schema
 # ============================================================
 FEATURE_STRUCT = pl.Struct([
-    # --- string sims ---
     pl.Field("sim_jw_fullname", pl.Float64),
     pl.Field("sim_jw_lastname", pl.Float64),
-    pl.Field("sim_lev_fullname", pl.Float64),     # NEW (normalized)
-    pl.Field("sim_lev_lastname", pl.Float64),     # NEW (normalized)
-    pl.Field("sim_soundex_last", pl.Int8),        # NEW phonetic
+    pl.Field("sim_lev_fullname", pl.Float64),
+    pl.Field("sim_lev_lastname", pl.Float64),
+    pl.Field("sim_soundex_last", pl.Int8),
 
     pl.Field("sim_jacc_fullname", pl.Float64),
     pl.Field("sim_jacc_lastname", pl.Float64),
 
-    # --- TF-IDF cosine sims (lightweight) ---
-    pl.Field("sim_tfidf_name", pl.Float64),       # NEW (word tf-idf cosine)
-    pl.Field("sim_char3_name", pl.Float64),       # NEW (char 3-gram cosine)
+    # --- TF-IDF cosine sims---
+    pl.Field("sim_tfidf_name", pl.Float64),      
+    pl.Field("sim_char3_name", pl.Float64),      
 
     # --- structured + geo ---
     pl.Field("first_initial_match", pl.Int8),
     pl.Field("state_match", pl.Int8),
     pl.Field("zip_match", pl.Int8),
-    pl.Field("zip3_match", pl.Int8),              # NEW
+    pl.Field("zip3_match", pl.Int8),            
     pl.Field("sim_jw_city", pl.Float64),
     pl.Field("sim_jw_street1", pl.Float64),
 
     # --- domain-specific cues ---
-    pl.Field("org_keyword_match", pl.Int8),       # NEW
-    pl.Field("org_vs_person_conflict", pl.Int8),  # NEW
-    pl.Field("credential_overlap", pl.Float64),   # NEW (token overlap)
-    pl.Field("suffix_match", pl.Int8),            # NEW (JR/SR/III etc)
+    pl.Field("org_keyword_match", pl.Int8),       
+    pl.Field("org_vs_person_conflict", pl.Int8),  
+    pl.Field("credential_overlap", pl.Float64),   
+    pl.Field("suffix_match", pl.Int8),            
 
-    # --- missingness flags (existing) ---
+    # --- missingness flags ---
     pl.Field("miss_b_first", pl.Int8),
     pl.Field("miss_b_last", pl.Int8),
     pl.Field("miss_b_street1", pl.Int8),
@@ -65,6 +66,7 @@ FEATURE_STRUCT = pl.Struct([
     pl.Field("miss_x_state", pl.Int8),
     pl.Field("miss_x_zip5", pl.Int8),
 ])
+
 # -----------------------------
 # Text normalization
 # -----------------------------
@@ -102,7 +104,6 @@ def char_ngrams(s: str, n: int = 3) -> list[str]:
 
 def street_simplify(s: str) -> str:
     s = norm(s)
-    # strip common unit designators
     s = re.sub(r"\b(STE|SUITE|UNIT|APT|FL|FLOOR|BLDG|BUILDING|ROOM|RM)\b", "", s)
     s = _ws.sub(" ", s).strip()
     return s
@@ -116,7 +117,7 @@ def zip3(z: str) -> str:
     return z[:3] if len(z) >= 3 else ""
 
 # ============================================================
-# Jaro-Winkler (your implementation)
+# Jaro-Winkler
 # ============================================================
 def jaro_similarity(s1: str, s2: str) -> float:
     s1 = norm(s1)
@@ -171,7 +172,7 @@ def jaro_winkler(s1: str, s2: str, p: float = 0.1, max_l: int = 4) -> float:
     return j + l * p * (1.0 - j)
 
 # ============================================================
-# NEW: Levenshtein similarity (normalized)
+# Levenshtein similarity (normalized)
 # ============================================================
 def levenshtein_dist(a: str, b: str) -> int:
     a = norm(a)
@@ -183,7 +184,7 @@ def levenshtein_dist(a: str, b: str) -> int:
     if not b:
         return len(a)
 
-    # small optimization: ensure b is shorter in memory row
+    # small optimization: ensuring b is shorter in memory row
     if len(a) < len(b):
         a, b = b, a
 
@@ -208,8 +209,9 @@ def lev_sim(a: str, b: str) -> float:
     d = levenshtein_dist(a, b)
     m = max(len(a), len(b))
     return 1.0 - (d / m) if m else 1.0
+
 # ============================================================
-# NEW: Phonetic matching (Soundex)
+# Phonetic matching (Soundex)
 # ============================================================
 _soundex_map = {
     **{c:"1" for c in "BFPV"},
@@ -234,8 +236,9 @@ def soundex(s: str) -> str:
     code = "".join(out).replace("0", "")
     code = (code + "000")[:4]
     return code
+
 # ============================================================
-# Existing: Jaccard token overlap
+# Jaccard token overlap
 # ============================================================
 def token_jaccard(a: str, b: str) -> float:
     A = tokens_set(a)
@@ -248,8 +251,8 @@ def token_jaccard(a: str, b: str) -> float:
 from collections import defaultdict
 
 # ============================================================
-# NEW: TF-IDF cosine (lightweight, per-row sparse dicts)
-#   - We build IDF dicts from provider tables once (cheap)
+# TF-IDF cosine (lightweight, per-row sparse dicts)
+# We build IDF dicts from provider tables once
 # ============================================================
 def build_idf_from_series(s: pl.Series, max_vocab: int = 200_000) -> dict[str, float]:
     # document frequency
@@ -263,13 +266,12 @@ def build_idf_from_series(s: pl.Series, max_vocab: int = 200_000) -> dict[str, f
         for t in toks:
             df[t] += 1
 
-    # keep most common df terms if massive
     items = sorted(df.items(), key=lambda x: -x[1])[:max_vocab]
     df = dict(items)
 
     idf = {}
     for t, d in df.items():
-        # smooth idf
+        # smoothing idf
         idf[t] = math.log((1 + n_docs) / (1 + d)) + 1.0
     return idf
 
@@ -300,7 +302,7 @@ def cosine_sparse(a: dict[str, float], b: dict[str, float]) -> float:
         return 1.0
     if not a or not b:
         return 0.0
-    # iterate smaller dict
+    
     if len(a) > len(b):
         a, b = b, a
     s = 0.0
@@ -308,11 +310,11 @@ def cosine_sparse(a: dict[str, float], b: dict[str, float]) -> float:
         vb = b.get(k)
         if vb is not None:
             s += va * vb
-    # already normalized
+    
     return float(max(0.0, min(1.0, s)))
 
-# "embedding-style": char-3gram tf-idf cosine using hashing trick (fixed dimensional)
-CHAR_DIM = 2**14  # 16384 dims (small, fast)
+# embedding-style: char-3gram tf-idf cosine using hashing trick (fixed dimensional)
+CHAR_DIM = 2**14
 def hashed_char_vec(text: str) -> dict[int, float]:
     grams = char_ngrams(text, 3)
     if not grams:
@@ -373,12 +375,12 @@ def build_name_series_for_idf(pb: pl.DataFrame, pa: pl.DataFrame, pc: pl.DataFra
         ).alias("name")
     )["name"]
 
-    # concat as a real Series
     return pl.concat([s_b, s_a, s_c], how="vertical")
 
-# Build IDF on names once
+# Building IDF on names once
 name_series = build_name_series_for_idf(pb, pa, pc)
 idf_name = build_idf_from_series(name_series, max_vocab=200_000)
+
 # ============================================================
 # Domain-specific helpers
 # ============================================================
@@ -403,8 +405,9 @@ def overlap_ratio(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
 # ============================================================
-# Row-wise feature function (extended)
+# Row-wise feature function
 # ============================================================
 def features_row(row: dict) -> dict:
     b_first = row.get("b_first") or ""
@@ -470,11 +473,10 @@ def features_row(row: dict) -> dict:
     org_b = is_org_like(b_last) or is_org_like(b_full)
     org_x = is_org_like(x_last) or is_org_like(x_full)
     org_keyword_match = int(org_b == 1 and org_x == 1)
-    org_vs_person_conflict = int((org_b == 1) ^ (org_x == 1))  # xor
+    org_vs_person_conflict = int((org_b == 1) ^ (org_x == 1))
 
     cred_overlap = overlap_ratio(credential_tokens(b_cred), credential_tokens(x_cred))
 
-    # suffix: use explicit suffix if available, else detect
     suf_b = norm(b_suf) or suffix_token(b_full)
     suf_x = norm(x_suf) or suffix_token(x_full)
     suffix_match = int(bool(suf_b) and bool(suf_x) and suf_b == suf_x)
@@ -518,10 +520,9 @@ def features_row(row: dict) -> dict:
         "miss_x_state": miss(x_state),
         "miss_x_zip5": miss(x_zip),
     }
+
 # ============================================================
 # BA features
-#   - bring in A credentials (if present)
-#   - bring in B suffix (present) and optionally creds (not in your providers_b)
 # ============================================================
 ba = (
     cand_ba
@@ -595,7 +596,6 @@ print("Wrote:", FEAT_DIR / "pair_features_ba.parquet", ba_feats.shape)
 
 # ============================================================
 # BC features
-#   - C has no address/zip; we keep them empty
 # ============================================================
 bc = (
     cand_bc

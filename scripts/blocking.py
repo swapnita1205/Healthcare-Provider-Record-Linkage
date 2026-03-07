@@ -19,6 +19,7 @@ pc = pl.read_parquet(OUT_DIR / "providers_c.parquet")
 
 RANDOM_STATE = 42
 rng = random.Random(RANDOM_STATE)
+
 # Helpers
 def first_initial(col: str) -> pl.Expr:
     return (
@@ -58,6 +59,7 @@ def jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
 # Building minimal blocking tables
 pa_k = (
     pa.select([
@@ -117,6 +119,7 @@ pc_k = (
     ])
     .filter(pl.col("npi_c").is_not_null())
 )
+
 # Info-theory stats for blocking keys: entropy + block sizes
 def key_stats(df: pl.DataFrame, key_col: str, dataset: str) -> dict:
     # counts per key
@@ -158,6 +161,7 @@ for k in KEYS_C:
     ks_rows.append(key_stats(pc_k, k, "C"))
 
 pl.DataFrame(ks_rows).write_csv(CAND_DIR / "blocking_key_stats.csv")
+
 # Mutual information between blocking attributes
 def mutual_info_discrete(x: np.ndarray, y: np.ndarray) -> float:
     x = np.asarray(x, dtype=object)
@@ -202,8 +206,9 @@ mi_a = mi_table(pa_k, "A")
 mi_b = mi_table(pb_k, "B")
 mi_c = mi_table(pc_k, "C")
 pl.concat([mi_a, mi_b, mi_c]).write_csv(CAND_DIR / "blocking_mutual_information.csv")
+
 # ============================================================
-# Gold-ish pairs for PR tradeoff: use PB records that have NPI and exist in A/C
+# Gold-ish pairs for PR tradeoff: PB records that have NPI and exist in A/C
 # ============================================================
 gold_ba = (
     pb_k.filter(pl.col("npi_b").is_not_null())
@@ -220,9 +225,7 @@ gold_bc = (
 
 gold_ba_set = set(map(tuple, gold_ba.to_numpy()))
 gold_bc_set = set(map(tuple, gold_bc.to_numpy()))
-# ============================================================
-# Your existing passes (kept) + additional passes
-# ============================================================
+
 metrics = {}
 pass_reports = []
 
@@ -244,9 +247,9 @@ def report_pass(name: str, pairs: pl.DataFrame, left_id: str, right_id: str, gol
         "gold_hits": int(hit),
         "gold_total": int(total_gold),
         "gold_recall": float(recall) if recall is not None else None,
-        # "precision" is not well-defined without full labels; use pairs-per-gold-hit proxy
         "pairs_per_gold_hit": float(pairs.height / hit) if hit > 0 else None,
     })
+
 # ============================================================
 # A <-> C exact NPI
 # ============================================================
@@ -258,6 +261,7 @@ cand_ac = (
 )
 cand_ac.write_parquet(CAND_DIR / "cand_ac.parquet")
 metrics["ac_exact_npi_pairs"] = cand_ac.height
+
 # ============================================================
 # Pass 1: Exact NPI BA/BC
 # ============================================================
@@ -281,8 +285,9 @@ cand_bc_npi = (
 
 report_pass("BA_exact_npi", cand_ba_npi, "profile_id", "npi_a", gold_ba_set)
 report_pass("BC_exact_npi", cand_bc_npi, "profile_id", "npi_c", gold_bc_set)
+
 # ============================================================
-# Pass 2: Geo blocks (BA) + Name blocks (BC) with caps (same as yours)
+# Pass 2: Geo blocks (BA) + Name blocks (BC) with caps
 # ============================================================
 ZIP_BLOCK_CAP = 500
 LAST_BLOCK_CAP = 2000
@@ -350,8 +355,9 @@ cand_bc_statelast = (
 )
 
 report_pass("BC_state_lastkey", cand_bc_statelast, "profile_id", "npi_c", gold_bc_set)
+
 # ============================================================
-# Pass 3: Sorted neighborhood (same as yours)
+# Pass 3: Sorted neighborhood
 # ============================================================
 WINDOW = 50
 
@@ -381,22 +387,22 @@ cand_bc_sn = sorted_neighborhood_pairs(pb_k, pc_k, "profile_id", "npi_c", "bk_st
 
 report_pass("BA_sorted_neighborhood", cand_ba_sn, "profile_id", "npi_a", gold_ba_set)
 report_pass("BC_sorted_neighborhood", cand_bc_sn, "profile_id", "npi_c", gold_bc_set)
+
 # ============================================================
-# (NEW) Pass 4: Canopy clustering (blocking) — within state
+# Pass 4: Canopy clustering (blocking) — within state
 #   - Uses token Jaccard on {first,last} tokens as canopy similarity
 #   - Efficient: works per-state and caps candidate list per canopy
-#   - Thresholds: T1 forms canopy, T2 prunes (classic canopy idea)
+#   - Thresholds: T1 forms canopy, T2 prunes
 # ============================================================
 CANOPY_T1 = 0.60
 CANOPY_T2 = 0.80
 CANOPY_MAX_CANDS = 200  # cap candidates per left record
 
 def canopy_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
-    # Work in pandas for canopy logic (simpler), but keep it bounded by state
     pb_pdf = pb_k.select(["profile_id","state","b_first","b_last"]).to_pandas()
     pa_pdf = pa_k.select(["npi_a","state","a_first","a_last"]).to_pandas()
 
-    # pre-index A by state with token sets
+    # pre-indexing A by state with token sets
     idx_a = defaultdict(list)
     for _, r in pa_pdf.iterrows():
         st = r["state"] or ""
@@ -409,7 +415,7 @@ def canopy_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
         btoks = set(tokenize_name(r["b_first"], r["b_last"]))
         if not st or not btoks:
             continue
-        # cheap canopy: pick candidates that pass T1, then keep those passing T2 (or top)
+        # cheap canopy: picking candidates that pass T1, then keeping those passing T2 (or top)
         cand = []
         for npi_a, atoks in idx_a.get(st, []):
             s = jaccard(btoks, atoks)
@@ -417,7 +423,7 @@ def canopy_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
                 cand.append((npi_a, s))
         if not cand:
             continue
-        # sort by similarity; keep bounded
+        # sorting by similarity; keep bounded
         cand.sort(key=lambda x: -x[1])
         strong = [x for x in cand if x[1] >= CANOPY_T2]
         chosen = strong[:CANOPY_MAX_CANDS] if strong else cand[:CANOPY_MAX_CANDS]
@@ -429,22 +435,21 @@ def canopy_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
 
 cand_ba_canopy = canopy_pairs_ba(pb_k, pa_k)
 report_pass("BA_canopy_state_name", cand_ba_canopy, "profile_id", "npi_a", gold_ba_set)
+
 # ============================================================
-# (NEW) Pass 5: Probabilistic blocking — MinHash LSH banding on name tokens (within state)
+# Pass 5: Probabilistic blocking — MinHash LSH banding on name tokens (within state)
 #   - Mathematical foundation: MinHash approximates Jaccard; LSH increases collision
 #   - Implementation is bounded by (state) and caps bucket sizes
 # ============================================================
 LSH_NUM_PERM = 64
 LSH_BANDS = 8
 LSH_ROWS_PER_BAND = LSH_NUM_PERM // LSH_BANDS
-LSH_BUCKET_CAP = 5000  # avoid huge buckets
+LSH_BUCKET_CAP = 5000
 
 def _hash64(x: str) -> int:
-    # stable 64-bit hash
     h = hashlib.blake2b(x.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(h, "little", signed=False)
 
-# Fixed random salts (permutation simulation)
 SALTS = [rng.getrandbits(64) for _ in range(LSH_NUM_PERM)]
 
 def minhash_signature(tokens: set[str]) -> tuple[int, ...]:
@@ -453,12 +458,11 @@ def minhash_signature(tokens: set[str]) -> tuple[int, ...]:
     vals = [_hash64(t) for t in tokens]
     sig = []
     for s in SALTS:
-        # min over hashed values xor salt (cheap permutation surrogate)
         m = min((v ^ s) for v in vals)
         sig.append(m)
     return tuple(sig)
+
 def lsh_buckets(signatures: dict[str, tuple[int,...]]) -> dict[tuple[int,int], list[str]]:
-    # map (band_idx, band_hash) -> list of ids
     buckets = defaultdict(list)
     for _id, sig in signatures.items():
         for b in range(LSH_BANDS):
@@ -466,7 +470,6 @@ def lsh_buckets(signatures: dict[str, tuple[int,...]]) -> dict[tuple[int,int], l
             band = sig[start:start+LSH_ROWS_PER_BAND]
             bh = _hash64("|".join(map(str, band)))
             buckets[(b, bh)].append(_id)
-    # cap huge buckets
     buckets = {k:v for k,v in buckets.items() if len(v) <= LSH_BUCKET_CAP}
     return buckets
 
@@ -474,7 +477,6 @@ def lsh_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
     pb_pdf = pb_k.select(["profile_id","state","b_first","b_last"]).to_pandas()
     pa_pdf = pa_k.select(["npi_a","state","a_first","a_last"]).to_pandas()
 
-    # signatures per state
     out = []
     for st in sorted(set(pa_pdf["state"].fillna("").tolist())):
         if not st:
@@ -500,13 +502,10 @@ def lsh_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
         buckets_a = lsh_buckets(sig_a)
         buckets_b = lsh_buckets(sig_b)
 
-        # join buckets by key
         for k in set(buckets_a.keys()) & set(buckets_b.keys()):
             a_ids = buckets_a[k]
             b_ids = buckets_b[k]
-            # produce candidate pairs (bounded)
             for pid in b_ids:
-                # cap number of candidates per pid from this bucket
                 for npi_a in a_ids[:CANOPY_MAX_CANDS]:
                     out.append((pid, npi_a, "lsh_minhash_state_name", st))
 
@@ -516,8 +515,9 @@ def lsh_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
 
 cand_ba_lsh = lsh_pairs_ba(pb_k, pa_k)
 report_pass("BA_lsh_minhash_state_name", cand_ba_lsh, "profile_id", "npi_a", gold_ba_set)
+
 # ============================================================
-# Combine + dedupe with priority (extend priorities)
+# Combining + deduping with priority
 # ============================================================
 PASS_PRIORITY = {
     "exact_npi": 0,
@@ -547,6 +547,7 @@ cand_bc_final = dedupe_with_priority(cand_bc_all, "profile_id", "npi_c")
 
 cand_ba_final.write_parquet(CAND_DIR / "cand_ba.parquet")
 cand_bc_final.write_parquet(CAND_DIR / "cand_bc.parquet")
+
 # ============================================================
 # Write comparative pass report (precision/recall trade-off proxy)
 # ============================================================

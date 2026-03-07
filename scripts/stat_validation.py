@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import HistGradientBoostingClassifier
 import joblib
+
 # -----------------------------
 # Paths / config
 # -----------------------------
@@ -36,10 +37,7 @@ PC_PATH = OUT_DIR / "providers_c.parquet"
 RANDOM_STATE = 42
 TEST_SIZE = 0.20
 
-# Grouping scheme:
-#   "profile"  -> group by profile_id (prevents leakage across pairs of same profile)
-#   "provider" -> group by candidate_npi (stricter: unseen provider generalization)
-GROUP_MODE = "profile"  # change to "provider" when needed
+GROUP_MODE = "profile" 
 
 # Cluster bootstrap
 BOOT_N = 400
@@ -47,14 +45,12 @@ BOOT_SEED = 123
 
 # Threshold:
 THRESH_JSON = MODEL_DIR / "thresholds.json"
-THRESH_KEY = "precision_target_threshold"  # or "best_f1_threshold"
+THRESH_KEY = "precision_target_threshold"
 DEFAULT_THR = 0.5
 
 # Sensitivity: threshold grid
 THR_GRID = np.linspace(0.05, 0.99, 40)
-# -----------------------------
-# Load + unify pair feature tables
-# -----------------------------
+
 def load_pairs() -> pl.DataFrame:
     ba = pl.read_parquet(PATH_BA).with_columns(pl.lit("BA").alias("pair_type"))
     bc = pl.read_parquet(PATH_BC).with_columns(pl.lit("BC").alias("pair_type"))
@@ -78,6 +74,7 @@ print("Labeled rows:", labeled.height, "Features:", len(feature_cols))
 pdf = labeled.to_pandas()
 X = pdf[feature_cols].astype(float).values
 y = pdf["y"].astype(int).values
+
 # -----------------------------
 # Choose grouping
 # -----------------------------
@@ -93,6 +90,7 @@ else:
     raise ValueError("GROUP_MODE must be 'profile' or 'provider'")
 
 print("Group mode:", GROUP_MODE, "Unique groups:", len(pd.unique(groups)))
+
 # -----------------------------
 # Threshold
 # -----------------------------
@@ -139,12 +137,12 @@ def precision_target_threshold(y_true: np.ndarray, scores: np.ndarray, target_pr
     thr_full = np.concatenate([thr_arr, [1.0]])
     idxs = np.where(prec >= target_precision)[0]
     if idxs.size == 0:
-        # fallback: best F1
         f1 = (2 * prec * rec) / np.clip((prec + rec), 1e-12, None)
         return float(thr_full[int(np.nanargmax(f1))])
     bestp = idxs[np.argmax(rec[idxs])]
     return float(thr_full[bestp])
-# ---- Cluster bootstrap by groups (more correct than row bootstrap) ----
+
+# ---- Cluster bootstrap by groups ----
 def cluster_bootstrap_ci(
     y_true: np.ndarray,
     scores: np.ndarray,
@@ -155,7 +153,7 @@ def cluster_bootstrap_ci(
 ) -> dict:
     rng = np.random.default_rng(seed)
     uniq = pd.unique(groups_arr)
-    # map group -> indices
+    # mapping group -> indices
     group_to_idx = {}
     for i, g in enumerate(groups_arr):
         group_to_idx.setdefault(g, []).append(i)
@@ -202,6 +200,7 @@ def cluster_bootstrap_ci(
         "f1": ci(f1s),
         "n_boot": int(n_boot),
     }
+
 # Paired cluster bootstrap test for difference in PR-AUC / ROC-AUC (A vs B)
 def paired_cluster_bootstrap_diff(
     y_true: np.ndarray,
@@ -247,7 +246,6 @@ def paired_cluster_bootstrap_diff(
     if diffs.size == 0:
         return {"metric": metric, "diff_mean": None, "p_value_two_sided": None, "note": "Insufficient bootstrap samples."}
 
-    # two-sided p-value: proportion crossing 0
     p = 2.0 * min(np.mean(diffs <= 0), np.mean(diffs >= 0))
     p = float(min(p, 1.0))
 
@@ -259,9 +257,7 @@ def paired_cluster_bootstrap_diff(
         "p_value_two_sided": p,
         "n_boot_used": int(diffs.size),
     }
-# -----------------------------
-# Models to compare
-# -----------------------------
+
 models = {}
 
 best_path = MODEL_DIR / "best_model.joblib"
@@ -274,8 +270,9 @@ models["logreg"] = Pipeline([
 ])
 
 models["grad_boost"] = HistGradientBoostingClassifier(random_state=RANDOM_STATE)
+
 # -----------------------------
-# (1) Grouped CV (OOF scores; supports significance via fold-level variability too)
+# (1) Grouped CV
 # -----------------------------
 cv = GroupKFold(n_splits=3)
 cv_rows = []
@@ -294,13 +291,14 @@ for fold, (tr, te) in enumerate(cv.split(X, y, groups=groups), start=1):
 cv_df = pd.DataFrame(cv_rows)
 cv_df.to_csv(REPORT_DIR / f"cv_grouped_{GROUP_MODE}.csv", index=False)
 
-# Also store fold-level PR-AUC distributions for quick “is it consistently better” evidence
+# Storing fold-level PR-AUC distributions
 cv_pr_summary = (
     cv_df.groupby(["model"])["pr_auc"]
     .agg(["mean", "std", "min", "max"])
     .reset_index()
 )
 cv_pr_summary.to_csv(REPORT_DIR / f"cv_pr_auc_summary_{GROUP_MODE}.csv", index=False)
+
 # -----------------------------
 # (2) Grouped holdout split + cluster bootstrap CI
 # -----------------------------
@@ -333,10 +331,10 @@ for name, m in models.items():
 
 with open(REPORT_DIR / f"holdout_cluster_bootstrap_{GROUP_MODE}.json", "w") as f:
     json.dump(holdout_summary, f, indent=2)
+
 # -----------------------------
 # (3) Significance testing of model differences (paired cluster bootstrap diffs)
 # -----------------------------
-# Pick A vs B:
 if "best_saved" in scores_store:
     A, B = "best_saved", "grad_boost"
 else:
@@ -348,8 +346,9 @@ diff_tests = {
 }
 with open(REPORT_DIR / f"paired_cluster_bootstrap_{A}_vs_{B}_{GROUP_MODE}.json", "w") as f:
     json.dump({"A": A, "B": B, **diff_tests}, f, indent=2)
+
 # -----------------------------
-# (4) Threshold sensitivity analysis (assumptions + robustness)
+# (4) Threshold sensitivity analysis
 # -----------------------------
 sens_rows = []
 for name, sc in scores_store.items():
@@ -360,7 +359,7 @@ for name, sc in scores_store.items():
 sens_df = pd.DataFrame(sens_rows)
 sens_df.to_csv(REPORT_DIR / f"threshold_sensitivity_{GROUP_MODE}.csv", index=False)
 
-# Recompute precision-target thresholds at multiple targets on the same holdout
+# Recomputing precision-target thresholds at multiple targets on the same holdout
 targets = [0.90, 0.95, 0.98]
 pt_rows = []
 for name, sc in scores_store.items():
@@ -376,8 +375,9 @@ for name, sc in scores_store.items():
             "f1": met["f1"],
         })
 pd.DataFrame(pt_rows).to_csv(REPORT_DIR / f"precision_target_thresholds_{GROUP_MODE}.csv", index=False)
+
 # -----------------------------
-# (5) Error buckets (your existing logic, kept)
+# (5) Error buckets
 # -----------------------------
 pa = pl.read_parquet(PA_PATH).select([
     pl.col("npi").alias("npi_a"),
@@ -447,7 +447,7 @@ bc_enriched = (
         pl.col("c_state").alias("x_state"),
     ])
 )
-# align schemas
+
 def align_pair(df_left: pl.DataFrame, df_right: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     all_cols = sorted(set(df_left.columns) | set(df_right.columns))
     dtypes_left = dict(zip(df_left.columns, df_left.dtypes))
@@ -521,7 +521,7 @@ bucket_counts = (
 )
 bucket_counts.write_csv(REPORT_DIR / f"error_buckets_{bucket_model}_{GROUP_MODE}.csv")
 
-print("✅ Wrote reports to:", REPORT_DIR)
+print("-- Wrote reports to:", REPORT_DIR)
 print(" - CV:", REPORT_DIR / f"cv_grouped_{GROUP_MODE}.csv")
 print(" - CV PR summary:", REPORT_DIR / f"cv_pr_auc_summary_{GROUP_MODE}.csv")
 print(" - Holdout+cluster bootstrap:", REPORT_DIR / f"holdout_cluster_bootstrap_{GROUP_MODE}.json")

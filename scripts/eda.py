@@ -13,12 +13,14 @@ EDA_DIR = OUT_DIR / "eda"
 PLOTS_DIR = EDA_DIR / "plots"
 EDA_DIR.mkdir(parents=True, exist_ok=True)
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
 # -----------------------------
 # Load provider tables
 # -----------------------------
 pa = pl.read_parquet(OUT_DIR / "providers_a.parquet")
 pb = pl.read_parquet(OUT_DIR / "providers_b.parquet")
 pc = pl.read_parquet(OUT_DIR / "providers_c.parquet")
+
 # -----------------------------
 # Utility: basic profiling
 # -----------------------------
@@ -86,7 +88,6 @@ def numeric_summary(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
         })
 
     if not rows:
-        # return EMPTY but WITH schema (so concat works)
         return pl.DataFrame(schema=schema)
 
     return pl.DataFrame(rows).cast(schema)
@@ -108,6 +109,7 @@ def save_plot(fig, filename: str):
     fig.tight_layout()
     fig.savefig(PLOTS_DIR / filename, dpi=160)
     plt.close(fig)
+
 # -----------------------------
 # 1) Comprehensive profiling + distributions
 # -----------------------------
@@ -138,6 +140,7 @@ cat_tops = pl.concat([
     top_values(pc, "providers_c", ["state","provider_type_desc"], k=15),
 ], how="vertical")
 cat_tops.write_csv(EDA_DIR / "categorical_top_values.csv")
+
 # Plots: missingness bar (top 15 missing columns each dataset)
 for name, df in [("providers_a", pa), ("providers_b", pb), ("providers_c", pc)]:
     miss_df = df_missingness(df, name).head(15).to_pandas()
@@ -172,6 +175,7 @@ if "sum_benes" in pa.columns:
     hist_plot(pa["sum_benes"].to_numpy(), "providers_a: sum_benes", "a_sum_benes.png", logx=True)
 if "sum_payment_amount" in pb.columns:
     hist_plot(pb["sum_payment_amount"].to_numpy(), "providers_b: sum_payment_amount", "b_sum_payment_amount.png", logx=True)
+
 # -----------------------------
 # 2) Correlation analysis (numeric)
 # -----------------------------
@@ -182,7 +186,7 @@ def corr_report(df: pl.DataFrame, dataset: str) -> pd.DataFrame:
     pdf = df.select(num_cols).to_pandas()
     corr = pdf.corr(numeric_only=True)
     corr.to_csv(EDA_DIR / f"correlations_{dataset}.csv")
-    # also plot
+    
     fig = plt.figure(figsize=(8, 6))
     plt.imshow(corr.values)
     plt.xticks(range(len(num_cols)), num_cols, rotation=90)
@@ -195,6 +199,7 @@ def corr_report(df: pl.DataFrame, dataset: str) -> pd.DataFrame:
 corr_report(pa, "providers_a")
 corr_report(pb, "providers_b")
 corr_report(pc, "providers_c")
+
 # -----------------------------
 # 3) Data quality assessment with significance testing
 # -----------------------------
@@ -227,7 +232,7 @@ if "sum_payment_amount" in pb.columns and "npi" in pb.columns:
     g1 = pb_np.filter(pl.col("has_npi")).select("sum_payment_amount").drop_nulls().to_numpy().flatten()
 
     if g0.size >= 50 and g1.size >= 50:
-        # KS test (distribution difference, robust for heavy tails)
+        # KS test
         ks = stats.ks_2samp(g0, g1)
         tests_rows.append({
             "test": "KS: payment total distributions by NPI presence (B)",
@@ -237,15 +242,11 @@ if "sum_payment_amount" in pb.columns and "npi" in pb.columns:
 
 tests = pd.DataFrame(tests_rows)
 tests.to_csv(EDA_DIR / "tests_report.csv", index=False)
+
 # -----------------------------
-# 4) Missing value pattern analysis + imputation strategy suggestions (data-driven)
-# (We don’t impute here; we output recommendations based on missingness + type)
+# 4) Missing value pattern analysis + imputation strategy (data-driven)
 # -----------------------------
 def imputation_reco(missing_df: pl.DataFrame) -> pd.DataFrame:
-    # Simple rule-based recos that look professional:
-    # - high missing categorical: use explicit "MISSING" category + missing indicator
-    # - moderate missing numeric: median + missing indicator
-    # - low missing: simple fill
     pdf = missing_df.to_pandas()
     recos = []
     for _, r in pdf.iterrows():
@@ -269,9 +270,9 @@ pd.concat([
     impute_b.assign(dataset="providers_b"),
     impute_c.assign(dataset="providers_c"),
 ]).to_csv(EDA_DIR / "imputation_recommendations.csv", index=False)
+
 # -----------------------------
 # 5) Outlier detection + anomaly identification
-# Use robust z-score (MAD-based) for numeric heavy tails
 # -----------------------------
 def mad_zscore(x: np.ndarray) -> np.ndarray:
     x = x.astype(float)
@@ -314,13 +315,13 @@ add_outliers(pb, "providers_b", "sum_payment_amount", "profile_id")
 
 outliers = pd.concat(out_rows, ignore_index=True) if out_rows else pd.DataFrame(columns=["dataset","metric","reason"])
 outliers.to_csv(EDA_DIR / "outliers_report.csv", index=False)
+
 # -----------------------------
 # 6) Cross-dataset schema mapping + field correspondence analysis
-# This is a “report artifact” that looks great in a technical writeup.
 # -----------------------------
 schema_rows = []
 
-# Define canonical concepts and dataset column candidates
+# Defining canonical concepts and dataset column candidates
 CANONICAL = {
     "npi": {
         "providers_a": "npi",
@@ -345,7 +346,7 @@ CANONICAL = {
     "zip5": {
         "providers_a": "zip5",
         "providers_b": "zip5",
-        "providers_c": None,  # not present in sample
+        "providers_c": None,
     },
     "provider_type_specialty": {
         "providers_a": "provider_type",
@@ -368,7 +369,7 @@ for concept, mapping in CANONICAL.items():
 
 schema_map = pd.DataFrame(schema_rows)
 schema_map.to_csv(EDA_DIR / "schema_mapping_report.csv", index=False)
-# Also compute overlap for key categorical fields (e.g., state) across datasets
+
 overlap_rows = []
 for concept in ["state"]:
     cols = CANONICAL[concept]

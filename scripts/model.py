@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from sklearn.inspection import permutation_importance
 import joblib
 # -----------------------------
-# Config (tune these to control runtime)
+# Config
 # -----------------------------
 OUT_DIR = Path("outputs")
 FEAT_DIR = OUT_DIR / "features"
@@ -41,7 +41,6 @@ NEG_PER_POS = 10
 HARD_NEG_FRAC = 0.5
 MAX_TRAIN_ROWS = 1_200_000
 
-# CV/HPO
 N_SPLITS = 3
 N_ITER_LR = 12
 N_ITER_GB = 16
@@ -52,7 +51,8 @@ UNLABELED_SAMPLE = 400_000
 ACTIVE_QUERY_N = 200
 
 # Calibration
-CALIBRATE_LINEAR_MODELS = True  # adds small overhead; improves probability quality
+CALIBRATE_LINEAR_MODELS = True
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -102,13 +102,12 @@ def safe_predict_proba(est, X: np.ndarray) -> np.ndarray:
     if hasattr(est, "predict_proba"):
         return est.predict_proba(X)[:, 1]
     if hasattr(est, "decision_function"):
-        # map margin -> (0,1) via sigmoid
         z = est.decision_function(X)
         return 1.0 / (1.0 + np.exp(-z))
-    # fallback
     return est.predict(X).astype(float)
+
 # -----------------------------
-# Load schema (columns) without materializing everything
+# Loading schema
 # -----------------------------
 ba_head = pl.read_parquet(PATH_BA, n_rows=5)
 bc_head = pl.read_parquet(PATH_BC, n_rows=5)
@@ -120,9 +119,7 @@ NON_FEATURES = {"profile_id", "pass", "block_key", "label_weak_npi", "npi_a", "n
 feature_cols = sorted(list((ba_cols & bc_cols) - NON_FEATURES))
 
 print("Using #features:", len(feature_cols))
-# -----------------------------
-# Lazy scans
-# -----------------------------
+
 ba_scan = pl.scan_parquet(PATH_BA).with_columns([
     pl.lit("BA").alias("pair_type"),
     pl.col("npi_a").alias("candidate_npi"),
@@ -147,7 +144,7 @@ labeled = df_scan.filter(pl.col("label_weak_npi").is_not_null()).with_columns([
 ]).drop("label_weak_npi")
 
 # -----------------------------
-# Build TRAINING SET: all positives + sampled negatives
+# Building TRAINING SET: all positives + sampled negatives
 # -----------------------------
 pos = labeled.filter(pl.col("y") == 1)
 neg = labeled.filter(pl.col("y") == 0)
@@ -212,6 +209,7 @@ train_pdf = train_df.to_pandas()
 X = train_pdf[feature_cols].values
 y = train_pdf["y"].values.astype(int)
 groups = train_pdf["profile_id"].values
+
 # -----------------------------
 # Holdout split (grouped)
 # -----------------------------
@@ -221,6 +219,7 @@ train_idx, test_idx = next(gss.split(X, y, groups=groups))
 X_train, y_train = X[train_idx], y[train_idx]
 X_test, y_test = X[test_idx], y[test_idx]
 test_pdf = train_pdf.iloc[test_idx].copy()
+
 # -----------------------------
 # Models
 # -----------------------------
@@ -232,7 +231,7 @@ lr = Pipeline([
     ("clf", LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs")),
 ])
 
-# Fast linear model (NEW): SGD logistic regression (scales well)
+# SGD logistic regression
 sgd = Pipeline([
     ("scaler", StandardScaler(with_mean=True, with_std=True)),
     ("clf", SGDClassifier(
@@ -245,7 +244,7 @@ sgd = Pipeline([
     )),
 ])
 
-# Gradient Boosting (strong nonlinear, usually faster than RF for big-ish data)
+# Gradient Boosting
 gb = HistGradientBoostingClassifier(random_state=RANDOM_STATE)
 
 param_space_lr = {"clf__C": np.logspace(-3, 2, 15)}
@@ -288,14 +287,15 @@ searches = {
     "sgd_logloss": sgd_search,
     "grad_boost": gb_search,
 }
-# Optional calibration for linear models to improve probability estimates (helps thresholding / active learning)
+
+
 def maybe_calibrate(name: str, estimator):
     if not CALIBRATE_LINEAR_MODELS:
         return estimator
     if name in ("logreg", "sgd_logloss"):
-        # Calibrate on training folds (internal CV), keep light
         return CalibratedClassifierCV(estimator, method="sigmoid", cv=3)
     return estimator
+
 # -----------------------------
 # Compare models on holdout
 # -----------------------------
@@ -347,7 +347,6 @@ with open(MODEL_DIR / "cv_metrics.json", "w") as f:
 best_model_name = results_df.iloc[0]["model"]
 best_est = searches[best_model_name].best_estimator_
 
-# Refit best estimator on FULL sampled train set, then calibrate if configured
 best_est.fit(X, y)
 best_model = maybe_calibrate(best_model_name, best_est)
 best_model.fit(X, y)
@@ -374,16 +373,16 @@ metrics_out = {
 }
 with open(MODEL_DIR / "metrics.json", "w") as f:
     json.dump(metrics_out, f, indent=2)
+
 # -----------------------------
 # Interpretability
 # -----------------------------
-# LR coefficients (always output)
+# LR coefficients
 lr_best = lr_search.best_estimator_
 lr_best.fit(X, y)
 lr_cal = maybe_calibrate("logreg", lr_best)
 lr_cal.fit(X, y)
 
-# For calibrated wrapper, pull underlying estimator if needed
 coef_model = lr_best
 coef = coef_model.named_steps["clf"].coef_.flatten()
 pd.DataFrame({"feature": feature_cols, "coef": coef}).sort_values("coef", ascending=False)\
@@ -400,8 +399,9 @@ pd.DataFrame({
     "perm_importance_std": perm.importances_std,
 }).sort_values("perm_importance_mean", ascending=False)\
   .to_csv(MODEL_DIR / "feature_importance_best_model.csv", index=False)
+  
 # -----------------------------
-# Active learning queue (uncertainty sampling on unlabeled)
+# Active learning queue
 # -----------------------------
 unlabeled = df_scan.filter(pl.col("label_weak_npi").is_null()).drop("label_weak_npi")
 unl_sample = lazy_sample_n(unlabeled, UNLABELED_SAMPLE, RANDOM_STATE).collect(streaming=True)
@@ -423,7 +423,7 @@ queue[["profile_id", "candidate_npi", "pair_type", "pass", "block_key", "score",
     MODEL_DIR / "active_learning_queue.csv", index=False
 )
 
-print("✅ Saved outputs to:", MODEL_DIR)
+print("Saved outputs to:", MODEL_DIR)
 print("Best model:", best_model_name)
 print("Train rows used:", len(train_pdf), "Pos rate:", y.mean())
 print("Model comparison:", MODEL_DIR / "all_models_results.csv")
