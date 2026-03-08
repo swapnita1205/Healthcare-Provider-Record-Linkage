@@ -33,8 +33,6 @@ pip install -r requirements.txt
 pip install fastapi uvicorn pytest
 ```
 
-> `fastapi`, `uvicorn`, and `pytest` are used by the API and tests.
-
 ---
 
 ## 3) Data Placement
@@ -47,21 +45,9 @@ Place raw source files under `data/` (as expected by `scripts/ingest.py`) using:
 unzip data.zip
 ```
 
-Then run:
-
-```bash
-python scripts/ingest.py
-```
-
-This should create:
-
-- `outputs/providers_a.parquet`
-- `outputs/providers_b.parquet`
-- `outputs/providers_c.parquet`
-
 ---
 
-## 4) Run Full Pipeline (Recommended)
+## 4) Run Full Pipeline
 
 Use the pipeline runner:
 
@@ -78,24 +64,7 @@ What `main.py` does:
 
 ---
 
-## 5) Run Partial Pipeline
-
-Examples:
-
-```bash
-# Skip EDA
-python main.py --skip-eda
-
-# Skip model + stat validation
-python main.py --skip-model
-
-# Run specific subset (in canonical order)
-python main.py --steps ingest,blocking,features
-```
-
----
-
-## 6) Run API
+## 5) Run API
 
 Start server:
 
@@ -143,27 +112,14 @@ curl -X POST http://127.0.0.1:8000/match/pair \
 
 ---
 
-## 7) Run Tests
+## 6) Run Tests
 
 ```bash
 pytest -q
 ```
-
-Run only fast tests:
-
-```bash
-pytest -q -m "not slow"
-```
-
-Run only integration/slow tests:
-
-```bash
-pytest -q -m slow
-```
-
 ---
 
-## 8) Key Output Locations
+## 7) Key Output Locations
 
 - `outputs/providers_*.parquet` - normalized provider tables
 - `outputs/eda/` - profiling and schema mapping outputs
@@ -171,33 +127,3 @@ pytest -q -m slow
 - `outputs/features/` - pairwise feature matrices
 - `outputs/models/` - trained model, thresholds, metrics, feature importance
 - `outputs/stat_validation/` - CV, bootstrap CIs, significance and error buckets
-
----
-
-## 9) Typical First Run
-
-```bash
-python main.py
-python api.py
-```
-
-Then open:
-
-- `http://127.0.0.1:8000/docs`
-
----
-
-## 10) Troubleshooting
-
-- **`ModuleNotFoundError`**  
-  Activate your venv and reinstall dependencies.
-
-- **`best_model.joblib` missing**  
-  Run `python main.py` (or at least through the `model` step in `scripts/model.py`).
-
-- **`providers_a.parquet` missing**  
-  Run `python scripts/ingest.py` (or `python main.py --steps ingest`).
-
-- **No matches returned from API**  
-  Check that incoming `state`/`zip5` are present and well-formatted; blocking uses state + zip5 first.
-
