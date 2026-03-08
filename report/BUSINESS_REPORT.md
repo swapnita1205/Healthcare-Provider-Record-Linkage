@@ -13,8 +13,8 @@ Healthcare organizations and regulators routinely collect provider data from mul
 This project delivers an **automated, machine-learning-powered pipeline** that resolves these fragmented records into unified provider identities with measurable, validated accuracy. Across three federal-scale datasets covering 2.5 million provider records, the system achieves:
 
 - **99.6% recall** — it finds almost every true match
-- **97.5% precision** — almost every match it returns is correct
-- **PR-AUC of 0.984** — near-perfect ranking of match confidence
+- **97.4% precision** — almost every match it returns is correct
+- **PR-AUC of 0.985** — near-perfect ranking of match confidence
 - Processing of **6 million candidate pairs** through a six-step automated pipeline
 - A **live REST API** for real-time provider lookup and matching
 
@@ -188,7 +188,7 @@ Manual provider matching by analysts is typically estimated at 85–92% accuracy
 
 | Metric | Manual Analyst (estimated) | Automated Pipeline |
 |---|---|---|
-| Precision (routine cases) | ~90% | 97.5% |
+| Precision (routine cases) | ~90% | 97.4% |
 | Recall (comprehensive) | ~85% | 99.6% |
 | Consistency | Variable (inter-rater variability ~5–8%) | Deterministic — same input always yields the same output |
 | Speed | 75 pairs/hour | ~6M pairs in minutes |
@@ -228,11 +228,11 @@ This section translates the system's technical outputs into the questions that d
 
 **Q: Does the system actually work?**
 
-Yes, with statistical evidence. The core model achieves 97.5% precision and 99.6% recall on a holdout evaluation set. These numbers come with confidence intervals derived from 400 bootstrap samples: precision 95% CI [84.4%, 86.2%], recall 95% CI [99.7%, 99.9%]. The system's performance is not just a point estimate — it is a validated range.
+Yes, with statistical evidence. The core model achieves 97.4% precision and 99.6% recall on a holdout evaluation set. These numbers come with confidence intervals derived from 400 bootstrap samples: precision 95% CI [83.9%, 85.7%], recall 95% CI [99.8%, 99.9%]. The system's performance is not just a point estimate — it is a validated range.
 
 **Q: How does it compare to alternatives?**
 
-Three separate model approaches were built and tested. All three outperform what manual or rule-based matching would achieve. The best model (gradient boosting) was confirmed as statistically significantly better than an independently-fit comparison model (p-value = 0.0 in a paired bootstrap test). The system went through rigorous model selection, not just a single attempt.
+Three separate model approaches were built and tested — logistic regression, random forest, and gradient boosting. All three outperform what manual or rule-based matching would achieve. The best model (gradient boosting) was confirmed as statistically significantly better than an independently-fit comparison model on PR-AUC (p-value = 0.0 in a paired bootstrap test). The system went through rigorous model selection, not just a single attempt.
 
 **Q: Can we trust it for compliance purposes?**
 
@@ -240,10 +240,10 @@ The system is auditable. Every match decision is backed by a 31-feature vector t
 
 **Q: What are the risks?**
 
-The system is not perfect. Approximately 3,072 errors were identified and categorized in testing:
-- 2,161 errors (70%) come from providers with multiple practice locations — the same person at different addresses
-- 262 errors (8.5%) come from name changes (marriage, legal name change)
-- 649 errors (21%) are miscellaneous difficult cases
+The system is not perfect. Approximately 3,197 errors were identified and categorized in testing:
+- 2,161 errors (68%) come from providers with multiple practice locations — the same person at different addresses
+- 315 errors (10%) come from name changes (marriage, legal name change)
+- 721 errors (23%) are miscellaneous difficult cases
 
 These are understandable, interpretable failure modes, not random noise. They can be addressed with targeted improvements (see Section 6). No complex system is error-free; what matters is knowing where the errors are and having a plan for them.
 
@@ -324,9 +324,9 @@ Being transparent about limitations is part of responsible deployment of any AI 
 
 ### 6.1 Current Limitations
 
-**Multiple practice locations (highest impact).** The system's most common error (70% of failures) involves the same provider appearing at two different addresses across datasets. The matching model treats address dissimilarity as a negative signal, which is correct most of the time — but not when the same provider legitimately operates from multiple locations. Currently, the system may either incorrectly merge two distinct providers who share a name and city, or fail to link the same provider across two datasets where their address differs.
+**Multiple practice locations (highest impact).** The system's most common error (68% of failures) involves the same provider appearing at two different addresses across datasets. The matching model treats address dissimilarity as a negative signal, which is correct most of the time — but not when the same provider legitimately operates from multiple locations. Currently, the system may either incorrectly merge two distinct providers who share a name and city, or fail to link the same provider across two datasets where their address differs.
 
-**Name changes.** Approximately 8.5% of errors involve providers who appear under different legal names across datasets (most commonly due to marriage). The system has no mechanism to detect that "Emily Johnson, MD" and "Emily Chen, MD" at the same address might be the same person. This is a structural limitation of the current feature set.
+**Name changes.** Approximately 10% of errors (315 cases) involve providers who appear under different legal names across datasets (most commonly due to marriage). The system has no mechanism to detect that "Emily Johnson, MD" and "Emily Chen, MD" at the same address might be the same person. This is a structural limitation of the current feature set.
 
 **Dataset C blocking for zip codes.** Dataset C (the PECOS registry) does not include ZIP codes in the current schema mapping. This means geo-based blocking for B↔C linkage cannot use zip codes — it relies on state + name keys only. Any B provider whose name is common and whose state is large (e.g., "David Lee" in California) may generate a very large candidate set in Dataset C, increasing the chance of a false positive.
 
@@ -358,7 +358,7 @@ The analysis showed that B↔A matching has lower precision (91.6%) than B↔C (
 **Priority 4 — Name alias and temporal matching (High impact, High effort)**
 
 Build or integrate a name alias table that maps common name change patterns: a list of (old_name, new_name, date_effective) tuples derived from state licensing board updates or NPI modification history. Use this to add a `name_alias_match` binary feature.
-- Expected impact: address ~262 currently unresolvable name-change errors; broader benefit for longitudinal tracking use cases
+- Expected impact: address ~315 currently unresolvable name-change errors; broader benefit for longitudinal tracking use cases
 
 **Priority 5 — Active learning label refinement (Moderate impact, Moderate effort)**
 

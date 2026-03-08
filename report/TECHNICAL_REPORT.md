@@ -157,11 +157,17 @@ The feature schema is identical for BA and BC pairs, allowing a single classifie
 
 | Rank | Feature | Importance (mean drop in PR-AUC) |
 |---|---|---|
-| 1 | sim_char3_name | ~0.058 |
-| 2 | state_match | ~0.020 |
-| 3 | miss_x_city | ~0.0065 |
-| 4 | first_initial_match | ~0.0048 |
-| 5–11 | sim_tfidf_name, sim_jw_fullname, sim_jw_lastname, sim_jacc_fullname, sim_jw_street1, sim_lev_lastname, zip_match | — |
+| 1 | sim_char3_name | 0.0621 |
+| 2 | state_match | 0.0112 |
+| 3 | miss_x_city | 0.0072 |
+| 4 | first_initial_match | 0.0059 |
+| 5 | sim_jw_lastname | 0.0036 |
+| 6 | sim_tfidf_name | 0.0032 |
+| 7 | sim_jw_fullname | 0.0021 |
+| 8 | sim_jw_street1 | 0.0013 |
+| 9 | sim_jacc_fullname | 0.0013 |
+| 10 | sim_lev_fullname | 0.0007 |
+| 11–14 | sim_jw_city, sim_zip_num, miss_x_zip5, sim_lev_lastname | — |
 
 The character 3-gram feature's dominance is notable: its substring-level representation generalizes better than any individual string metric, likely because it bridges multiple types of variation simultaneously (typos, abbreviations, and OCR errors all produce overlapping trigrams). State match as the second most important feature reflects the fundamental geographic structure of the linkage problem — a provider in Texas is almost never a match for a provider in Maine, even with a similar name.
 
@@ -182,12 +188,12 @@ For negatives, the strategy uses undersampling at a 10:1 ratio combined with a h
 **Three models** were trained and compared:
 
 - **Logistic Regression** with `StandardScaler` and `class_weight="balanced"`. A strong, interpretable baseline.
-- **SGDClassifier** with log loss and elasticnet regularization. Designed for scalability — can be updated incrementally without loading the full dataset into memory.
-- **HistGradientBoostingClassifier**. A tree-ensemble model that natively handles mixed feature types and is robust to the scale differences between features (exact binary matches alongside continuous similarity scores).
+- **RandomForestClassifier** with tuned depth and feature subsampling. Provides a non-linear ensemble baseline with good out-of-the-box performance and built-in feature importance via impurity reduction.
+- **HistGradientBoostingClassifier**. A gradient boosting tree-ensemble that natively handles mixed feature types and is robust to the scale differences between features (exact binary matches alongside continuous similarity scores).
 
 **Hyperparameter optimization** used `RandomizedSearchCV` with `GroupKFold` (3 folds by profile_id) and `average_precision` (PR-AUC) as the scoring metric. PR-AUC is the right choice for imbalanced classification — it summarizes the precision-recall trade-off without being distorted by the large number of true negatives, unlike ROC-AUC.
 
-The best gradient boosting configuration: `min_samples_leaf=80`, `max_iter=700`, `max_depth=7`, `learning_rate=0.06`, `l2_regularization=0.01`.
+The best gradient boosting configuration: `min_samples_leaf=80`, `max_iter=700`, `max_depth=7`, `learning_rate=0.1`, `l2_regularization=0.001`. The best random forest configuration: `n_estimators=200`, `min_samples_leaf=5`, `max_features=0.5`, `max_depth=10`.
 
 ---
 
@@ -195,15 +201,15 @@ The best gradient boosting configuration: `min_samples_leaf=80`, `max_iter=700`,
 
 ### 3.1 Holdout Metrics by Model
 
-| Model | PR-AUC | ROC-AUC | Best-F1 | Precision | Recall | Precision @ 95% Target | Recall @ 95% Target |
-|---|---|---|---|---|---|---|---|
-| **grad_boost (best)** | **0.984** | **0.999** | **0.985** | **0.975** | **0.996** | **0.950** | **0.999** |
-| sgd_logloss | 0.979 | 0.999 | 0.983 | 0.971 | 0.996 | 0.950 | 0.998 |
-| logreg | 0.978 | 0.999 | 0.983 | 0.972 | 0.995 | 0.950 | 0.998 |
+| Model | Best CV PR-AUC | Holdout PR-AUC | Holdout ROC-AUC | Best-F1 | Precision | Recall | Precision @ 95% Target | Recall @ 95% Target |
+|---|---|---|---|---|---|---|---|---|
+| **grad_boost (best)** | **0.9844** | **0.9846** | **0.9990** | **0.9848** | **0.9738** | **0.9960** | **0.9500** | **0.9988** |
+| random_forest | 0.9787 | 0.9782 | 0.9988 | 0.9848 | 0.9740 | 0.9959 | 0.9500 | 0.9990 |
+| logreg | 0.9798 | 0.9762 | 0.9985 | 0.9816 | 0.9720 | 0.9914 | 0.9500 | 0.9945 |
 
-All three models perform well, which is worth noting: logistic regression is not far behind gradient boosting. This suggests that the feature engineering is doing most of the heavy lifting — the relationships between features and the match label are predominantly linear or near-linear, and the tree-ensemble captures a small additional gain at the margins.
+All three models perform well. Notably, random forest matches gradient boosting exactly on best-F1 (0.9848) and even achieves marginally higher recall at the 95% precision target (0.9990 vs 0.9988), while logistic regression is only modestly behind. This confirms that the feature engineering is doing most of the work — the underlying relationships are strong enough that all three model families converge to similar performance.
 
-At a 95% precision operating point, recall remains above 99.8% for all three models. This is a very strong result for record linkage: the system achieves high purity in its match decisions while recovering almost all true matches.
+A notable nuance: gradient boosting leads on holdout PR-AUC (0.9846 vs 0.9782 for random forest), which is the primary selection criterion since PR-AUC reflects the full precision-recall curve rather than a single operating point. At a 95% precision operating point, recall is above 99.4% for all three models — a very strong result for real-world record linkage.
 
 ### 3.2 Performance by Pair Type
 
@@ -218,15 +224,15 @@ This difference suggests that pair-type-specific thresholds may be worth explori
 
 ### 3.3 Cross-Validation Stability
 
-GroupKFold cross-validation across 3 profile-grouped folds produced the following PR-AUC results:
+GroupKFold cross-validation across 3 profile-grouped folds produced the following PR-AUC results (evaluated at the fixed precision-target threshold on the full labeled set):
 
 | Model | Fold 1 | Fold 2 | Fold 3 | Mean | Std |
 |---|---|---|---|---|---|
-| best_saved | 0.925 | 0.920 | 0.922 | 0.922 | 0.0026 |
-| grad_boost | 0.920 | 0.907 | 0.916 | 0.914 | 0.0067 |
-| logreg | 0.895 | 0.889 | 0.893 | 0.892 | 0.0030 |
+| best_saved | 0.9156 | 0.9169 | 0.9205 | 0.9176 | 0.0025 |
+| grad_boost | 0.9197 | 0.9137 | 0.9152 | 0.9162 | 0.0031 |
+| logreg | 0.8946 | 0.8890 | 0.8919 | 0.8919 | 0.0028 |
 
-The low standard deviations (0.003–0.007) indicate that performance is stable across different profile groups. There are no signs of overfitting to specific geographic regions or provider categories in the training set.
+The low standard deviations (0.003 or less) indicate stable performance across different profile groups. There are no signs of overfitting to specific geographic regions or provider categories in the training set. Note that these CV PR-AUC values are computed on the full labeled set at a fixed threshold, which differs from the holdout-only metrics in Section 3.1 — the two sets of numbers are complementary rather than directly comparable.
 
 ### 3.4 Bootstrap Confidence Intervals
 
@@ -234,40 +240,40 @@ Cluster bootstrap resampling (400 samples, grouping by `profile_id`) was used to
 
 | Metric | Mean | 95% CI |
 |---|---|---|
-| PR-AUC | 0.930 | [0.923, 0.935] |
-| ROC-AUC | 0.999 | [0.999, 0.999] |
-| Precision | 0.854 | [0.844, 0.862] |
-| Recall | 0.998 | [0.997, 0.999] |
-| F1 | 0.920 | [0.915, 0.925] |
+| PR-AUC | 0.9292 | [0.9240, 0.9357] |
+| ROC-AUC | 0.9992 | [0.9991, 0.9993] |
+| Precision | 0.8485 | [0.8392, 0.8572] |
+| Recall | 0.9982 | [0.9976, 0.9988] |
+| F1 | 0.9173 | [0.9118, 0.9223] |
 
 The cluster bootstrap (resampling profiles, not individual pairs) is the methodologically correct approach here because pairs from the same profile are statistically dependent — they share the same B-side feature values. Row-level bootstrap would underestimate uncertainty by treating these dependent samples as independent.
 
-The very narrow confidence interval on ROC-AUC ([0.999, 0.999]) reflects the model's near-perfect discriminative ability at the overall level. The wider interval on precision (±0.009) is expected — precision is more sensitive to threshold choice and to the exact mix of easy vs. hard negatives in each bootstrap sample.
+The very narrow confidence interval on ROC-AUC ([0.9991, 0.9993]) reflects the model's near-perfect discriminative ability at the overall level. The wider interval on precision (±0.009) is expected — precision is more sensitive to threshold choice and to the exact mix of easy vs. hard negatives in each bootstrap sample.
 
 ### 3.5 Statistical Model Comparison
 
 A paired cluster bootstrap test (same group resamples applied to both models) compared `best_saved` against a freshly-fit `grad_boost`:
 
-- **PR-AUC difference:** mean 0.0050, 95% CI [0.0034, 0.0067], p-value = 0.0 (two-sided)
-- **ROC-AUC difference:** mean 9.2e-5, 95% CI [1.9e-5, 1.8e-4], p-value = 0.0
+- **PR-AUC difference:** mean 0.0040, 95% CI [0.0024, 0.0055], p-value = 0.0 (two-sided) — **statistically significant**
+- **ROC-AUC difference:** mean 1.5e-5, 95% CI [−6.8e-5, 8.9e-5], p-value = 0.68 (two-sided) — **not statistically significant**
 
-The `best_saved` model is statistically significantly better than the refit gradient booster on both metrics. This is consistent with the benefit of probability calibration applied during Step 4 — calibrated probability estimates produce a better-behaved precision-recall curve even when raw discriminative power (ROC-AUC) is nearly identical.
+The `best_saved` model is statistically significantly better than the refit gradient booster on PR-AUC. The ROC-AUC difference is negligible and not significant — the confidence interval straddles zero, confirming that both models have essentially identical discriminative ability overall. The PR-AUC advantage of `best_saved` likely reflects minor fitting variation (random seed, internal state) between the serialized model and the freshly refit one, rather than a structural difference in model quality.
 
 ### 3.6 Threshold Sensitivity
 
-The chosen precision-target threshold (~0.018) sits at the high-recall end of the precision-recall curve. As the threshold is raised toward 0.45–0.90:
+The chosen precision-target threshold (0.018) sits at the high-recall end of the precision-recall curve. The best-F1 threshold sits at 0.380. As the threshold is raised from 0.05 toward 0.90:
 
-- Precision increases from ~0.87 to ~0.89 (modest gain)
-- Recall decreases from ~0.998 to ~0.99 (modest loss at first, then steeper)
-- F1 peaks in the mid-range (~0.94)
+- Precision increases gradually from ~0.870 to ~0.892 (modest gain across the range)
+- Recall decreases from ~0.998 to ~0.995 (shallow at first, then steeper)
+- F1 peaks around the mid-threshold range (~0.939)
 
 The table of precision-target thresholds makes the trade-off explicit for deployment decisions:
 
 | Target Precision | Threshold | Achieved Precision | Recall |
 |---|---|---|---|
-| 90% | ~0.86 | 0.92 | 0.67 |
-| 95% | ~0.90 | 0.97 | 0.18 |
-| 98% | ~0.90 | 0.998 | 0.13 |
+| 90% | ~0.863 | 0.918 | 0.673 |
+| 95% | ~0.894 | 0.958 | 0.215 |
+| 98% | ~0.895 | 0.998 | 0.134 |
 
 The steep recall drop when pushing above 90% precision is typical of hard record linkage problems. It reflects the existence of genuinely ambiguous pairs — providers with similar names and overlapping geographies — that can only be resolved with additional evidence (e.g., specialty matching, NPI lookups, human review).
 
@@ -282,21 +288,21 @@ False positives from the best model were categorized into interpretable failure 
 | Error Type | B↔C (BC) | B↔A (BA) | Total |
 |---|---|---|---|
 | Multiple practice locations | 2,088 | 73 | 2,161 |
-| Married or name change | 203 | 59 | 262 |
-| Other | 636 | 13 | 649 |
-| **Total** | **2,927** | **145** | **3,072** |
+| Married or name change | 238 | 77 | 315 |
+| Other | 653 | 68 | 721 |
+| **Total** | **2,979** | **218** | **3,197** |
 
-**Multiple practice locations** is by far the dominant failure mode, accounting for 70% of errors. This happens when the same provider appears at two different addresses in the data — perhaps a physician who works at both a hospital and a private clinic. The model may classify these as matches (they share the same name, credentials, and state), but the address difference causes issues when the address features are weighted heavily. Conversely, it might also produce false negatives if address dissimilarity pushes the score below the threshold.
+**Multiple practice locations** is the dominant failure mode, accounting for ~68% of errors. This happens when the same provider appears at two different addresses in the data — perhaps a physician who works at both a hospital and a private clinic. The model may classify these as matches (they share the same name, credentials, and state), but the address difference causes issues when the address features are weighted heavily. Conversely, it might also produce false negatives if address dissimilarity pushes the score below the threshold.
 
 The correct long-term fix is not a better model, but a better data representation: resolving providers to a single canonical identity and then linking all their practice locations to that identity. A post-processing step that clusters matches by provider identity and tolerates multiple addresses would directly address this failure mode.
 
-**Married or name change** accounts for ~8.5% of errors. A provider who changed their last name (most commonly from marriage or divorce) will appear under two different last names across datasets collected at different times. The current feature set has no temporal dimension — it cannot reason about the fact that "Emily Johnson" in 2018 and "Emily Chen" in 2021 might be the same person. Adding alias tables or temporal name-matching logic would directly address this.
+**Married or name change** accounts for ~10% of errors (315 cases). A provider who changed their last name (most commonly from marriage or divorce) will appear under two different last names across datasets collected at different times. The current feature set has no temporal dimension — it cannot reason about the fact that "Emily Johnson" in 2018 and "Emily Chen" in 2021 might be the same person. Adding alias tables or temporal name-matching logic would directly address this.
 
-**Other errors** (21%) likely include data entry errors severe enough to fall below similarity thresholds, unusual organization name formats, and genuinely ambiguous cases where two different providers have nearly identical names and practice in the same zip code.
+**Other errors** (~23%) likely include data entry errors severe enough to fall below similarity thresholds, unusual organization name formats, and genuinely ambiguous cases where two different providers have nearly identical names and practice in the same zip code.
 
 ### 4.2 By Pair Type
 
-BC errors (2,927) substantially outnumber BA errors (145), but this is partly explained by scale — the BC gold set (85,539 pairs) is 25x larger than the BA gold set (3,345). Normalized to the positive set size, the error rates are more comparable.
+BC errors (2,979) substantially outnumber BA errors (218), but this is partly explained by scale — the BC gold set (85,539 pairs) is 25x larger than the BA gold set (3,345). Normalized to the positive set size, the error rates are more comparable.
 
 The higher proportion of "other" errors in BC likely reflects the greater diversity of Dataset C (2.4M records from a national NPI registry), which includes more edge cases: organization vs. individual ambiguities, providers with extremely common names, and records from territories and rare state codes not well-represented in training.
 
@@ -438,7 +444,7 @@ This project implements a complete, production-grade record linkage pipeline for
 
 **Algorithmically:** The blocking layer reduces a potential 6-billion-pair problem to 6 million candidates without sacrificing recall. The combination of exact NPI joining, name-based blocking, sorted neighborhood, and canopy clustering provides overlapping coverage that is robust to the failure modes of any individual strategy. Block size caps prevent tail explosion on large datasets.
 
-**Machine learning:** The feature set is rich (31 features spanning character-level, token-level, phonetic, geographic, and domain-specific signals) and designed to be learnable. The training protocol addresses weak labels and class imbalance correctly. The gradient boosting model achieves PR-AUC of 0.984 and recall above 99% at 95% precision — strong performance for a real-world linkage problem.
+**Machine learning:** The feature set is rich (31 features spanning character-level, token-level, phonetic, geographic, and domain-specific signals) and designed to be learnable. The training protocol addresses weak labels and class imbalance correctly. Three model families were evaluated — logistic regression, random forest, and gradient boosting. The best model (gradient boosting) achieves holdout PR-AUC of 0.985 and recall above 99.6% at 95% precision — strong performance for a real-world linkage problem.
 
 **Operationally:** The pipeline is modular, testable, and serves predictions through a well-structured API. The test suite covers all five operational scenarios with a mix of unit and integration tests. The `PageHinkleyDetector` provides a lightweight but principled mechanism for detecting and responding to concept drift over time.
 
