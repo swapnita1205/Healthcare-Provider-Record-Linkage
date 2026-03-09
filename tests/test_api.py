@@ -1,7 +1,5 @@
 """API tests for linkage service endpoints."""
 
-from __future__ import annotations
-
 import numpy as np
 import polars as pl
 from fastapi.testclient import TestClient

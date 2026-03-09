@@ -1,7 +1,5 @@
 """Unit tests for similarity and feature engineering helpers."""
 
-from __future__ import annotations
-
 import pytest
 
 from matching_utils import (

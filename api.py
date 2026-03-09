@@ -1,7 +1,5 @@
 """FastAPI service for provider record linkage inference."""
 
-from __future__ import annotations
-
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from matching_utils import FEATURE_COLUMNS, build_idf_from_texts, features_row, zip3
+from matching_utils import FEATURE_COLUMNS, build_idf_from_texts, features_row, safe_predict_proba, zip3
 
 OUT_DIR = Path("outputs")
 MODEL_PATH = OUT_DIR / "models" / "best_model.joblib"
@@ -74,16 +72,6 @@ def _safe_read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
-
-
-def _model_predict_proba(model: Any, x: np.ndarray) -> np.ndarray:
-    """Return positive-class probability scores for an estimator."""
-    if hasattr(model, "predict_proba"):
-        return model.predict_proba(x)[:, 1]
-    if hasattr(model, "decision_function"):
-        z = model.decision_function(x)
-        return 1.0 / (1.0 + np.exp(-z))
-    return model.predict(x).astype(float)
 
 
 def _build_feature_row(
@@ -220,7 +208,7 @@ def match_pair(record: ProviderRecord) -> PairMatchResponse:
     ]
 
     x_mat = np.array([[float(feat.get(c, 0.0)) for c in FEATURE_COLUMNS] for feat in feature_rows], dtype=float)
-    probs = _model_predict_proba(app.state.model, x_mat)
+    probs = safe_predict_proba(app.state.model, x_mat)
 
     matches: list[MatchCandidate] = []
     for cand, feat, prob in zip(cand_rows, feature_rows, probs):

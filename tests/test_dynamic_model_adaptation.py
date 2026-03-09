@@ -7,8 +7,6 @@ The helper classes and functions are defined here directly since
 scenario 5 is a test-level concern, not a production pipeline step.
 """
 
-from __future__ import annotations
-
 import numpy as np
 
 from sklearn.linear_model import LogisticRegression

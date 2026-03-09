@@ -86,7 +86,7 @@ def run_step(step: str, project_root: Path) -> StepResult:
         passed = False
         error = f"Step '{step}' failed with exit code {exc.returncode}."
         print(f"[{step}] ERROR {error}", file=sys.stderr)
-    except Exception as exc:  # pragma: no cover - defensive guard
+    except Exception as exc:
         passed = False
         error = f"Step '{step}' failed: {exc}"
         print(f"[{step}] ERROR {error}", file=sys.stderr)

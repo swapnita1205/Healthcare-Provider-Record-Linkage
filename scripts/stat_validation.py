@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 import json
 import numpy as np
@@ -17,6 +15,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import HistGradientBoostingClassifier
 import joblib
+
+from matching_utils import safe_predict_proba
 
 # -----------------------------
 # Paths / config
@@ -103,13 +103,6 @@ print("Using threshold:", thr)
 # -----------------------------
 # Helpers
 # -----------------------------
-def safe_scores(model, Xb: np.ndarray) -> np.ndarray:
-    if hasattr(model, "predict_proba"):
-        return model.predict_proba(Xb)[:, 1]
-    if hasattr(model, "decision_function"):
-        z = model.decision_function(Xb)
-        return 1.0 / (1.0 + np.exp(-z))
-    return model.predict(Xb).astype(float)
 def metrics_from_scores(y_true: np.ndarray, scores: np.ndarray, thr_val: float) -> dict:
     y_pred = (scores >= thr_val).astype(int)
     out = {
@@ -282,7 +275,7 @@ for fold, (tr, te) in enumerate(cv.split(X, y, groups=groups), start=1):
     for name, m in models.items():
         model = clone(m)
         model.fit(X[tr], y[tr])
-        sc = safe_scores(model, X[te])
+        sc = safe_predict_proba(model, X[te])
         oof_scores[name][te] = sc
 
         met = metrics_from_scores(y[te], sc, thr)
@@ -316,7 +309,7 @@ scores_store = {}
 for name, m in models.items():
     model = clone(m)
     model.fit(X_tr, y_tr)
-    sc = safe_scores(model, X_te)
+    sc = safe_predict_proba(model, X_te)
     scores_store[name] = sc
 
     base = metrics_from_scores(y_te, sc, thr)

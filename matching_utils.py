@@ -13,6 +13,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
+import numpy as np
+
 _ws = re.compile(r"\s+")
 _non_alnum = re.compile(r"[^A-Z0-9 ]+")
 
@@ -529,6 +531,16 @@ def features_row(row: dict[str, Any], idf_name: dict[str, float]) -> dict[str, f
         "sim_zip_num": float(sim_zip_num_val),
         "n_years_b": float(n_years_b_val),
     }
+
+
+def safe_predict_proba(model: Any, X: np.ndarray) -> np.ndarray:
+    """Return positive-class probability scores for any sklearn-compatible estimator."""
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)[:, 1]
+    if hasattr(model, "decision_function"):
+        z = model.decision_function(X)
+        return 1.0 / (1.0 + np.exp(-z))
+    return model.predict(X).astype(float)
 
 
 def exact_npi_block_candidates(records_b: list[dict[str, str | None]], records_a: list[dict[str, str | None]]) -> set[tuple[str, str]]:

@@ -1,7 +1,5 @@
 """Unit tests for blocking helper functions."""
 
-from __future__ import annotations
-
 from matching_utils import (
     block_key,
     canopy_candidates,

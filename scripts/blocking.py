@@ -415,7 +415,7 @@ def canopy_pairs_ba(pb_k: pl.DataFrame, pa_k: pl.DataFrame) -> pl.DataFrame:
         btoks = set(tokenize_name(r["b_first"], r["b_last"]))
         if not st or not btoks:
             continue
-        # cheap canopy: picking candidates that pass T1, then keeping those passing T2 (or top)
+        # candidates passing T1; keep the stronger T2 ones if any exist
         cand = []
         for npi_a, atoks in idx_a.get(st, []):
             s = jaccard(btoks, atoks)
@@ -437,9 +437,8 @@ cand_ba_canopy = canopy_pairs_ba(pb_k, pa_k)
 report_pass("BA_canopy_state_name", cand_ba_canopy, "profile_id", "npi_a", gold_ba_set)
 
 # ============================================================
-# Pass 5: Probabilistic blocking — MinHash LSH banding on name tokens (within state)
-#   - Mathematical foundation: MinHash approximates Jaccard; LSH increases collision
-#   - Implementation is bounded by (state) and caps bucket sizes
+# Pass 5: MinHash LSH — state-partitioned approximate name matching
+# Bucket sizes are capped to avoid blowup on common names in large states
 # ============================================================
 LSH_NUM_PERM = 64
 LSH_BANDS = 8

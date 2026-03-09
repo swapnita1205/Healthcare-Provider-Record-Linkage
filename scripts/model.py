@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 import json
 import numpy as np
@@ -23,6 +21,9 @@ from sklearn.metrics import (
 )
 from sklearn.inspection import permutation_importance
 import joblib
+
+from matching_utils import safe_predict_proba
+
 # -----------------------------
 # Config
 # -----------------------------
@@ -97,14 +98,6 @@ def eval_by_pair_type(df_test: pd.DataFrame, scores: np.ndarray, thr: float) -> 
             continue
         out[pt] = metrics_at(df_test.loc[mask, "y"].values.astype(int), scores[mask], thr)
     return out
-
-def safe_predict_proba(est, X: np.ndarray) -> np.ndarray:
-    if hasattr(est, "predict_proba"):
-        return est.predict_proba(X)[:, 1]
-    if hasattr(est, "decision_function"):
-        z = est.decision_function(X)
-        return 1.0 / (1.0 + np.exp(-z))
-    return est.predict(X).astype(float)
 
 # -----------------------------
 # Loading schema
@@ -397,18 +390,8 @@ pd.DataFrame({
 }).sort_values("perm_importance_mean", ascending=False)\
   .to_csv(MODEL_DIR / "feature_importance_best_model.csv", index=False)
   
-# -------------------------------------------------------
-# Active Learning Loop
-# -------------------------------------------------------
-# Simulates iterative human-in-the-loop labeling.
-# We treat the NPI weak labels as a stand-in oracle
-# (in production these would come from human reviewers).
-#
-# Strategy: start with a small seed set, then at each round
-# ask the oracle to label the pairs the model is most
-# uncertain about (closest to the 0.5 decision boundary).
-# This is standard uncertainty / margin sampling.
-# -------------------------------------------------------
+# Active learning: start from a small seed, then at each round query the pairs
+# the model is least confident about. NPI matches proxy for human review labels.
 
 AL_ITERS = 3
 AL_QUERY_PER_ITER = 100
@@ -451,7 +434,7 @@ for al_round in range(AL_ITERS):
     if len(al_pool) == 0:
         break
 
-    # Query: pick pairs nearest the decision boundary from the unlabeled pool
+    # Query the most uncertain pairs from the unlabeled pool
     pool_scores = al_clf.predict_proba(X[al_pool])[:, 1]
     uncertainty = np.abs(pool_scores - 0.5)
     n_query = min(AL_QUERY_PER_ITER, len(al_pool))
