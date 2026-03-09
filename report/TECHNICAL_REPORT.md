@@ -1,9 +1,7 @@
 # Technical Report: Healthcare Provider Record Linkage Pipeline
 
-**Project:** End-to-end entity resolution across Medicare, Open Payments, and PECOS provider datasets  
-**Date:** March 2026  
-
----
+**Project:** End-to-end entity resolution across Medicare, Open Payments, and PECOS provider datasets
+**Date:** March 2026
 
 ## Table of Contents
 
@@ -16,17 +14,15 @@
 7. [API & Serving Layer](#7-api--serving-layer)
 8. [Summary & Conclusions](#8-summary--conclusions)
 
----
-
 ## 1. Project Overview
 
-This project implements an end-to-end record linkage pipeline for linking healthcare provider records across three distinct data sources:
+This pipeline links healthcare provider records across three data sources:
 
-- **Dataset A** — Medicare Part B / claims-style data (60,751 providers, keyed by NPI). Contains service volumes, beneficiary counts, HCPCS codes, and standardized amounts.
-- **Dataset B** — Open Payments–style data (105,203 profiles, keyed by `profile_id`). Contains payment records, program years, and covered recipient information. NPI is present but optional.
-- **Dataset C** — PECOS-style NPI registry / reference directory (2,391,071 providers, keyed by NPI). Contains name, organization, state, and provider type information.
+- **Dataset A:** Medicare Part B / claims-style data (60,751 providers, keyed by NPI). Contains service volumes, beneficiary counts, HCPCS codes, and standardized amounts.
+- **Dataset B:** Open Payments-style data (105,203 profiles, keyed by `profile_id`). Contains payment records, program years, and covered recipient information. NPI is present but optional.
+- **Dataset C:** PECOS-style NPI registry / reference directory (2,391,071 providers, keyed by NPI). Contains name, organization, state, and provider type information.
 
-The core problem is **entity resolution**: given that the same real-world provider may appear in all three datasets under different keys, with different name spellings, address variations, or missing identifiers, the pipeline must reliably link those records together.
+The core challenge is **entity resolution**: the same provider can appear in all three datasets under different keys, with different name spellings, address formats, or missing identifiers. The pipeline links those records reliably.
 
 The pipeline runs in six sequential steps:
 
@@ -34,76 +30,70 @@ The pipeline runs in six sequential steps:
 ingest → eda → blocking → features → model → stat_validation
 ```
 
-All artifacts — normalized tables, candidate pairs, feature matrices, trained models, and validation reports — are written to the `outputs/` directory.
-
----
+All artifacts (normalized tables, candidate pairs, feature matrices, trained models, validation reports) are written to `outputs/`.
 
 ## 2. Methodology & Design Decisions
 
 ### 2.1 Data Ingestion & Normalization
 
-The first step transforms raw CSV inputs into clean, one-row-per-entity Parquet tables. Several design choices here reflect the realities of healthcare data:
+The first step transforms raw CSV inputs into clean, one-row-per-entity Parquet tables. A few choices here were driven by the realities of healthcare data.
 
-**Text normalization** is applied uniformly: uppercase conversion, whitespace collapsing, and removal of non-alphanumeric characters (except spaces). NPI values are extracted via a 10-digit regex, and ZIP codes via a 5-digit regex. This matters because the same address might appear as "123 Main St.", "123 MAIN ST", or "123 Main Street" across different systems — all of which should normalize to the same token before any comparison.
+Text normalization is applied uniformly: uppercase conversion, whitespace collapsing, removal of non-alphanumeric characters (except spaces). NPI values are extracted via a 10-digit regex, ZIP codes via a 5-digit regex. The same address can show up as "123 Main St.", "123 MAIN ST", or "123 Main Street" across different systems; all three need to normalize to the same token before comparison.
 
-**Drift indicators** are computed during aggregation: fields like `n_unique_street1`, `n_unique_city`, and `n_unique_name` count the number of distinct values seen per NPI or profile over time. A provider who appears under two different street addresses in the same dataset is not an error — it reflects a real-world pattern (multiple practice locations) — but it is a meaningful signal for the matching stage.
+During aggregation, drift indicators are also computed: fields like `n_unique_street1`, `n_unique_city`, and `n_unique_name` count the number of distinct values seen per NPI or profile. A provider appearing under two different street addresses in the same dataset is not an error (multiple practice locations are common), but it's a meaningful signal at the matching stage.
 
-**Key design asymmetry:** Datasets A and C are both keyed by NPI, which means direct NPI-join is possible and highly reliable for A↔C. Dataset B is keyed by a synthetic `profile_id`, with NPI as an optional field. This creates two fundamentally different linkage problems: the relatively easy case where NPI is present, and the harder case where it is missing and name/address/geography must carry the weight.
-
----
+Datasets A and C are both keyed by NPI, so direct NPI joins are possible and highly reliable for A↔C. Dataset B is keyed by a synthetic `profile_id`, with NPI as an optional field. This creates two different linkage subproblems: when NPI is present it's a direct join; when it's absent, name, address, and geography have to do the work.
 
 ### 2.2 Exploratory Data Analysis
 
-Before any matching logic was built, a comprehensive statistical profiling pass was run to understand the data and justify downstream decisions.
+Before building any matching logic, I ran a statistical profiling pass to understand the data and inform downstream choices.
 
-**Missingness patterns** are the first thing to establish. The findings are summarized below:
+Missingness patterns are the first thing to establish. The findings are summarized below:
 
 | Dataset | High-missing columns | Impact |
 |---|---|---|
 | providers_a | street2 (78.8%), middle_name (37.3%), credentials (13.5%), zip5 (9.5%) | Core identity fields (NPI, last name, state, street1) are complete. Optional fields are unreliable. |
 | providers_b | suffix (99.3%), street2 (81.7%), middle_name (65.2%) | NPI missing for only 40 rows (0.04%), but optional descriptors are almost always absent. |
-| providers_c | None | Fully populated for all profiled columns — consistent with it being a curated reference registry. |
+| providers_c | None | Fully populated for all profiled columns, consistent with it being a curated reference registry. |
 
-The critical insight from this analysis is that fields like `middle_name`, `suffix`, and `street2` cannot be used as primary matching signals. The pipeline correctly does not depend on them. Instead, matching is built around the fields that are reliably present across all three sources: `state`, `zip5` (where available), `first_name`, and `last_name`.
+The main takeaway is that `middle_name`, `suffix`, and `street2` cannot be used as primary matching signals. Matching is built around the fields that are reliably present across all three sources: `state`, `zip5` (where available), `first_name`, and `last_name`.
 
-**Information content** was measured using Shannon entropy and distinct-value counts for each blocking candidate field:
+Information content was measured using Shannon entropy and distinct-value counts for each blocking candidate field:
 
-- **ZIP5** has entropy ~12.1–12.2 bits across A and B, with 9,000–10,000 distinct values. This makes it extremely discriminative for blocking — any two providers sharing the same state+zip are already a much smaller candidate pool than the full cross-product.
-- **State** has entropy ~5.0–5.1 bits with ~56 distinct values. Useful as a first-level partition but alone creates blocks that are still very large.
-- **Last name key** (first 6 characters) has entropy ~15.4–15.9 bits. Combined with state, this is the strongest non-NPI blocking key available.
+- ZIP5 has entropy ~12.1-12.2 bits across A and B, with 9,000-10,000 distinct values. This makes it extremely discriminative for blocking; any two providers sharing the same state+zip are already a much smaller candidate pool than the full cross-product.
+- State has entropy ~5.0-5.1 bits with ~56 distinct values. Useful as a first-level partition but alone creates blocks that are still very large.
+- Last name key (first 6 characters) has entropy ~15.4-15.9 bits. Combined with state, this is the strongest non-NPI blocking key available.
 
-This entropy analysis directly drove the choice of blocking keys in Step 2 — not as an afterthought, but as a principled, data-driven selection process.
+This analysis drove the blocking key choices in Step 2.
 
-**Numeric distributions** across all three datasets are heavily right-skewed. In providers_a, `sum_benes` has a median of 232 but a mean of 644 and a maximum of 908,000. In providers_b, `sum_payment_amount` has a median of $35 but a mean of $349 and a maximum of $3.46 million. This pattern justified two choices: using log-scale plots in the EDA, and using MAD-based (Median Absolute Deviation) robust z-scores for outlier detection rather than standard z-scores. A standard z-score threshold on this distribution would flag thousands of legitimate high-volume providers as anomalies.
+Numeric distributions across all three datasets are heavily right-skewed. In providers_a, `sum_benes` has a median of 232 but a mean of 644 and a maximum of 908,000. In providers_b, `sum_payment_amount` has a median of $35 but a mean of $349 and a maximum of $3.46 million. This justified two choices: log-scale plots in the EDA, and MAD-based (Median Absolute Deviation) robust z-scores for outlier detection rather than standard z-scores. A standard z-score threshold on this distribution would flag thousands of legitimate high-volume providers as anomalies.
 
-**Imputation strategy** was derived directly from the missingness rates, following a tiered approach:
+The imputation strategy followed a tiered approach based on the missingness rates:
 - Columns with >30% missing: treated as informative signal. An `is_missing` flag is added, and a "MISSING" token is used for categoricals. No imputation.
-- Columns with 5–30% missing: light imputation (median/mode) combined with a binary missingness indicator.
+- Columns with 5-30% missing: light imputation (median/mode) combined with a binary missingness indicator.
 - Columns with <5% missing: simple fill is sufficient.
 
-This philosophy — preserve missingness as a learnable feature rather than aggressively imputing it away — propagates through the entire pipeline and surfaces explicitly in the feature engineering step.
-
----
+Treating missingness as a learnable signal rather than something to impute away carries through the entire pipeline and shows up explicitly in the feature engineering step.
 
 ### 2.3 Blocking Strategy
 
-The blocking step is algorithmically the most important stage for computational efficiency. Its job is to reduce the candidate pair space from potentially billions of cross-product pairs to a tractable set of millions that are worth comparing in detail.
+Blocking is the most important step for computational efficiency. Without it, the candidate space is potentially billions of cross-product pairs; the goal is to reduce that to a few million worth examining in detail.
 
-**The fundamental trade-off in blocking** is recall vs. computational cost. A blocking strategy that misses a true match can never recover it downstream — the pair is simply lost. A strategy that generates too many candidates makes the comparison stage prohibitively expensive. Both failure modes are costly.
+The core trade-off is recall vs. cost. A blocking pass that misses a true pair loses it permanently since no downstream step can recover it. Generating too many candidates makes the comparison stage prohibitively expensive. Both failure modes hurt.
 
 Five distinct blocking strategies were implemented and evaluated:
 
 **1. Exact NPI join.** When B has an NPI that appears in A or C, a direct key join is performed. This is deterministic and achieves 100% precision and 100% recall on the NPI-present subset. For B↔C, this covers 85,539 pairs; for B↔A, 3,345 pairs. The critical limitation is that only ~3.2% of B profiles link to A via NPI, so this pass alone is insufficient.
 
-**2. Geo-based exact blocking.** Candidate pairs are generated by joining on (state, zip5) or (state, city). Block size caps are enforced — `ZIP_BLOCK_CAP=500` and `LAST_BLOCK_CAP=2000` — to prevent a single dense urban zip code from exploding into tens of thousands of pairs. The data supports this cap: A's state+zip blocks have a P95 of 21 records but a maximum of 1,834. The P95-to-max ratio of ~87x is precisely why a cap is necessary rather than optional.
+**2. Geo-based exact blocking.** Candidate pairs are generated by joining on (state, zip5) or (state, city). Block size caps are enforced (`ZIP_BLOCK_CAP=500` and `LAST_BLOCK_CAP=2000`) to prevent a single dense urban zip code from exploding into tens of thousands of pairs. The data supports this cap: A's state+zip blocks have a P95 of 21 records but a maximum of 1,834. The P95-to-max ratio of ~87x is precisely why a cap is necessary rather than optional.
 
-**3. Name-based exact blocking.** Joining on (state, last_name_key) and (state, last_name_key, first_initial). The information-theoretic analysis shows `bk_state_last_fi` achieves entropy >15.7 bits in A and B, with an average block size of 1.06 — meaning almost every provider gets their own block. This is extremely tight and focused. However, Dataset C's scale (2.4M records) breaks this assumption: even `bk_state_last_fi` produces a maximum block of 38,358 records for common names in large states like California, making the `LAST_BLOCK_CAP` a hard necessity rather than a precaution.
+**3. Name-based exact blocking.** Joining on (state, last_name_key) and (state, last_name_key, first_initial). The information-theoretic analysis shows `bk_state_last_fi` achieves entropy >15.7 bits in A and B, with an average block size of 1.06, meaning almost every provider gets their own block. However, Dataset C's scale (2.4M records) breaks this assumption: even `bk_state_last_fi` produces a maximum block of 38,358 records for common names in large states like California, making the `LAST_BLOCK_CAP` a hard necessity.
 
 **4. Sorted Neighborhood.** Records are sorted by a composite key (state + last_name_key + first_initial) and a sliding window of size 50 is moved through the sorted list, generating pairs within each window. This catches fuzzy name matches that fall close together lexicographically but not in the same exact block. For B↔A, this generates 12,019 candidates and recovers 94.2% of the gold set; for B↔C, 337,524 candidates with 89.3% gold recall.
 
 **5. Canopy Clustering and LSH MinHash.** Canopy clustering uses Jaccard similarity on name tokens with configured thresholds, generating compact candidate sets with very low overhead per gold hit (1.12 pairs per gold hit for B↔A). MinHash LSH operates on state+name token sets and provides probabilistic approximate nearest-neighbor matching with configurable recall-cost trade-offs.
 
-**Quantified pass-level performance:**
+Pass-level performance:
 
 | Pass | Pairs | Gold Recall | Pairs per Gold Hit |
 |---|---|---|---|
@@ -115,45 +105,43 @@ Five distinct blocking strategies were implemented and evaluated:
 | BC_sorted_neighborhood | 337,524 | 0.893 | 4.42 |
 | BA_state_zip | 1,906,541 | 0.778 | 732.7 |
 
-The state+zip blocking for B↔A recovers only 77.8% of gold pairs but generates 732 candidates per true match — this is the most wasteful configuration. The canopy approach recovers nearly the same fraction (93.7%) with 1.12 pairs per gold hit, making it around 650x more efficient per recovered true match.
+The state+zip blocking for B↔A recovers only 77.8% of gold pairs but generates 732 candidates per true match. The canopy approach recovers nearly the same fraction (93.7%) with 1.12 pairs per gold hit, making it around 650x more efficient per recovered true match.
 
 The final strategy combines passes by union and deduplication, with pass priority order: exact_npi > state_zip > state_lastkey > sorted_neighborhood. This gives:
 - **BA final pairs:** 1,916,045 (~18.2 candidate NPI matches per B profile on average)
 - **BC final pairs:** 4,069,046 (~38.7 candidate NPI matches per B profile on average)
 
-**Mutual information analysis** was also used to assess independence between blocking attributes. ZIP5 and city share high mutual information (~8–10 bits), confirming they are largely redundant — using both in the same key adds little beyond using zip alone. State and first_initial are nearly independent (MI ≈ 0), which justifies combining them for multi-attribute keys without redundancy concerns.
+Mutual information analysis confirmed that ZIP5 and city share high mutual information (~8-10 bits), meaning they are largely redundant as a combined blocking key. State and first_initial are nearly independent (MI ≈ 0), which justifies combining them for multi-attribute keys.
 
-One notable anomaly: the state+city B↔A pass produced exactly 0 pairs. Investigation suggests that when zip is missing in B, the (state, city) combination either is also missing, or produces blocks that exceed the cap and are filtered out. This is a known gap and is noted as a future investigation point.
-
----
+One notable anomaly: the state+city B↔A pass produced exactly 0 pairs. When zip is missing in B, the (state, city) combination either is also missing, or produces blocks that exceed the cap and get filtered out. This is a known gap noted for future investigation.
 
 ### 2.4 Similarity Feature Engineering
 
-For each candidate pair, a 31-feature vector is computed. The features fall into four groups, each addressing a different aspect of provider identity.
+For each candidate pair, a 31-feature vector is computed. The features fall into four groups.
 
-**String similarity measures** form the core of the feature set. Six distinct metrics are used, each capturing a different kind of name variation:
+String similarity measures are the core of the feature set. Six metrics are used, each capturing a different kind of name variation:
 
-- **Jaro-Winkler similarity** is prefix-weighted, making it particularly well-suited for typographic errors near the start of a name — which is common in OCR-processed records and manual data entry.
-- **Normalized Levenshtein distance** counts character-level edit operations and normalizes by the length of the longer string. This handles insertions, deletions, and substitutions uniformly.
-- **Jaccard similarity on token sets** computes the ratio of shared word tokens to all unique word tokens. This is robust to word order changes ("John Smith" vs "Smith, John") and handles extra tokens from middle names or credentials embedded in name fields.
-- **Soundex phonetic matching** converts both names to their phonetic code and returns a binary match indicator. This catches spelling variants that are phonetically identical — Smith/Smyth, Fischer/Fisher, Jennings/Jenningz — without any character-level comparison.
-- **TF-IDF cosine similarity** builds IDF weights from the full combined name corpus (A + B + C), then compares L2-normalized term vectors. Common last names like "SMITH" or "JOHNSON" receive lower weight; rare names receive higher weight. This is particularly useful for compound or hyphenated names and for distinguishing between providers who share a common surname.
-- **Character 3-gram cosine similarity** hashes character trigrams into a 2^14-dimensional space and computes cosine similarity. This operates at the substring level, providing an embedding-style signal that captures partial matches, abbreviations, and OCR-style character substitutions.
+- Jaro-Winkler similarity is prefix-weighted, making it well-suited for typographic errors near the start of a name, which is common in OCR-processed records and manual data entry.
+- Normalized Levenshtein distance counts character-level edit operations and normalizes by the length of the longer string. This handles insertions, deletions, and substitutions uniformly.
+- Jaccard similarity on token sets computes the ratio of shared word tokens to all unique word tokens. This is robust to word order changes ("John Smith" vs "Smith, John") and handles extra tokens from middle names or credentials embedded in name fields.
+- Soundex phonetic matching converts both names to their phonetic code and returns a binary match indicator. This catches spelling variants that are phonetically identical (Smith/Smyth, Fischer/Fisher) without any character-level comparison.
+- TF-IDF cosine similarity builds IDF weights from the full combined name corpus (A + B + C), then compares L2-normalized term vectors. Common last names like "SMITH" or "JOHNSON" receive lower weight; rare names receive higher weight. Particularly useful for compound or hyphenated names.
+- Character 3-gram cosine similarity hashes character trigrams into a 2^14-dimensional space and computes cosine similarity. This operates at the substring level and captures partial matches, abbreviations, and OCR-style character substitutions.
 
-**Structured and geographic features** include exact binary matches for first initial, state, 5-digit zip, and 3-digit zip prefix; and Jaro-Winkler fuzzy scores for city and street1. Street normalization strips common suite/unit tokens ("STE", "SUITE", "APT", "UNIT") before comparison to reduce false negatives from address formatting differences.
+Structured and geographic features include exact binary matches for first initial, state, 5-digit zip, and 3-digit zip prefix; and Jaro-Winkler fuzzy scores for city and street1. Street normalization strips common suite/unit tokens ("STE", "SUITE", "APT", "UNIT") before comparison to reduce false negatives from address formatting differences.
 
-**Domain-specific healthcare features** were added to improve precision on edge cases:
+A few domain-specific features were added to improve precision on edge cases:
 
 - `org_keyword_match`: both sides contain organization tokens (LLC, INC, HOSPITAL, CLINIC, GROUP, etc.)
-- `org_vs_person_conflict`: one side looks like an organization, the other like an individual — a strong negative signal
+- `org_vs_person_conflict`: one side looks like an organization, the other like an individual, a strong negative signal
 - `credential_overlap`: Jaccard similarity over credential tokens (MD, DO, DDS, NP, PA, RN) parsed from the credentials field
 - `suffix_match`: explicit JR/SR/II/III matching from the suffix field or parsed from the name string
 
-**Missingness flags** (`miss_b_*` and `miss_x_*`) encode whether each side of the pair is missing a given field. Rather than imputing and then computing similarity, the model is given explicit indicators so it can learn the behavioral difference between "both sides present and similar" vs "one side missing."
+Missingness flags (`miss_b_*` and `miss_x_*`) encode whether each side of the pair is missing a given field. Rather than imputing and then computing similarity, the model is given explicit indicators so it can learn the difference between "both sides present and similar" vs "one side missing."
 
 The feature schema is identical for BA and BC pairs, allowing a single classifier to be trained on the combined labeled set with a `pair_type` indicator where needed.
 
-**Feature importance (from Step 4 permutation analysis):**
+Feature importance from the Step 4 permutation analysis:
 
 | Rank | Feature | Importance (mean drop in PR-AUC) |
 |---|---|---|
@@ -167,35 +155,31 @@ The feature schema is identical for BA and BC pairs, allowing a single classifie
 | 8 | sim_jw_street1 | 0.0013 |
 | 9 | sim_jacc_fullname | 0.0013 |
 | 10 | sim_lev_fullname | 0.0007 |
-| 11–14 | sim_jw_city, sim_zip_num, miss_x_zip5, sim_lev_lastname | — |
+| 11-14 | sim_jw_city, sim_zip_num, miss_x_zip5, sim_lev_lastname | -- |
 
-The character 3-gram feature's dominance is notable: its substring-level representation generalizes better than any individual string metric, likely because it bridges multiple types of variation simultaneously (typos, abbreviations, and OCR errors all produce overlapping trigrams). State match as the second most important feature reflects the fundamental geographic structure of the linkage problem — a provider in Texas is almost never a match for a provider in Maine, even with a similar name.
-
----
+The character 3-gram feature's dominance is notable: its substring-level representation generalizes better than any individual string metric, likely because it bridges typos, abbreviations, and OCR errors simultaneously (all produce overlapping trigrams). State match as the second most important feature reflects the fundamental geographic structure of the problem.
 
 ### 2.5 Machine Learning Classification
 
 The classification step trains binary classifiers to predict match (1) vs. non-match (0) for each candidate pair.
 
-**Training set construction** required careful handling of two challenges: weak labels and severe class imbalance.
+Training set construction had to deal with two problems: weak labels and class imbalance.
 
-Labels were derived from NPI overlap — pairs where B's NPI matches A's or C's NPI are treated as positive. This yields 88,884 positive examples (BA: 3,345; BC: 85,539). The limitation is that any true match not captured by NPI agreement is invisible to the training process, which is why these are called "weak" labels.
+Labels were derived from NPI overlap: pairs where B's NPI matches A's or C's NPI are treated as positive. This yields 88,884 positive examples (BA: 3,345; BC: 85,539). The limitation is that any true match not captured by NPI agreement is invisible to the training process, which is why these are called weak labels.
 
-For negatives, the strategy uses undersampling at a 10:1 ratio combined with a hard-negative component: 50% of the sampled negatives are chosen specifically from pairs with high name similarity (Jaro-Winkler on last name or full name ≥ 0.92) but no NPI match. This forces the model to learn the distinction between name-similar pairs that are and are not the same person — which is precisely the hard case in practice. The final training set contained 977,724 rows with a positive rate of 9.1%.
+For negatives, the strategy uses undersampling at a 10:1 ratio combined with a hard-negative component: 50% of the sampled negatives are chosen specifically from pairs with high name similarity (Jaro-Winkler on last name or full name >= 0.92) but no NPI match. This forces the model to learn the distinction between name-similar pairs that are and are not the same person, which is the hard case in practice. The final training set contained 977,724 rows with a positive rate of 9.1%.
 
-**GroupShuffleSplit by `profile_id`** was used for train/test splitting. This is the correct approach for record linkage: all pairs involving the same B profile must be assigned entirely to train or entirely to test. Splitting at the pair level would leak information — the model could implicitly learn the profile's features during training through other pairs. Profile-level grouping prevents this.
+GroupShuffleSplit by `profile_id` was used for train/test splitting. This is the correct approach for record linkage: all pairs involving the same B profile must be assigned entirely to train or entirely to test. Splitting at the pair level would leak information since the model could implicitly learn the profile's features during training through other pairs.
 
-**Three models** were trained and compared:
+Three models were trained and compared:
 
-- **Logistic Regression** with `StandardScaler` and `class_weight="balanced"`. A strong, interpretable baseline.
-- **RandomForestClassifier** with tuned depth and feature subsampling. Provides a non-linear ensemble baseline with good out-of-the-box performance and built-in feature importance via impurity reduction.
-- **HistGradientBoostingClassifier**. A gradient boosting tree-ensemble that natively handles mixed feature types and is robust to the scale differences between features (exact binary matches alongside continuous similarity scores).
+- Logistic Regression with `StandardScaler` and `class_weight="balanced"`. A strong, interpretable baseline.
+- RandomForestClassifier with tuned depth and feature subsampling. Provides a non-linear ensemble baseline with good out-of-the-box performance and built-in feature importance via impurity reduction.
+- HistGradientBoostingClassifier. A gradient boosting tree-ensemble that natively handles mixed feature types and is robust to the scale differences between features (exact binary matches alongside continuous similarity scores).
 
-**Hyperparameter optimization** used `RandomizedSearchCV` with `GroupKFold` (3 folds by profile_id) and `average_precision` (PR-AUC) as the scoring metric. PR-AUC is the right choice for imbalanced classification — it summarizes the precision-recall trade-off without being distorted by the large number of true negatives, unlike ROC-AUC.
+Hyperparameter optimization used `RandomizedSearchCV` with `GroupKFold` (3 folds by profile_id) and `average_precision` (PR-AUC) as the scoring metric. PR-AUC is the right choice for imbalanced classification; it summarizes the precision-recall trade-off without being distorted by the large number of true negatives.
 
 The best gradient boosting configuration: `min_samples_leaf=80`, `max_iter=700`, `max_depth=7`, `learning_rate=0.1`, `l2_regularization=0.001`. The best random forest configuration: `n_estimators=200`, `min_samples_leaf=5`, `max_features=0.5`, `max_depth=10`.
-
----
 
 ## 3. Performance Analysis
 
@@ -207,9 +191,9 @@ The best gradient boosting configuration: `min_samples_leaf=80`, `max_iter=700`,
 | random_forest | 0.9787 | 0.9782 | 0.9988 | 0.9848 | 0.9740 | 0.9959 | 0.9500 | 0.9990 |
 | logreg | 0.9798 | 0.9762 | 0.9985 | 0.9816 | 0.9720 | 0.9914 | 0.9500 | 0.9945 |
 
-All three models perform well. Notably, random forest matches gradient boosting exactly on best-F1 (0.9848) and even achieves marginally higher recall at the 95% precision target (0.9990 vs 0.9988), while logistic regression is only modestly behind. This confirms that the feature engineering is doing most of the work — the underlying relationships are strong enough that all three model families converge to similar performance.
+All three models perform well. Notably, random forest matches gradient boosting exactly on best-F1 (0.9848) and even achieves marginally higher recall at the 95% precision target (0.9990 vs 0.9988), while logistic regression is only modestly behind. This confirms that the feature engineering is doing most of the work; the underlying relationships are strong enough that all three model families converge to similar performance.
 
-A notable nuance: gradient boosting leads on holdout PR-AUC (0.9846 vs 0.9782 for random forest), which is the primary selection criterion since PR-AUC reflects the full precision-recall curve rather than a single operating point. At a 95% precision operating point, recall is above 99.4% for all three models — a very strong result for real-world record linkage.
+Gradient boosting leads on holdout PR-AUC (0.9846 vs 0.9782 for random forest), which is the primary selection criterion since PR-AUC reflects the full precision-recall curve rather than a single operating point. At a 95% precision operating point, recall is above 99.4% for all three models.
 
 ### 3.2 Performance by Pair Type
 
@@ -220,7 +204,7 @@ A notable nuance: gradient boosting leads on holdout PR-AUC (0.9846 vs 0.9782 fo
 
 BA precision (91.6%) is noticeably lower than BC precision (95.2%) at the same threshold. The underlying reason is structural: the BA positive set has only 3,345 examples versus 85,539 for BC, giving the model much less signal about the distribution of true BA matches. Additionally, the B↔A linkage relies more heavily on non-NPI blocking strategies, which introduce more noise into the candidate pairs.
 
-This difference suggests that pair-type-specific thresholds may be worth exploring: a slightly higher threshold for BA pairs could bring precision closer to the BC level, at the cost of a modest recall reduction. Given the practical importance of precision in downstream clinical or financial applications, this trade-off would likely be favorable.
+This suggests that pair-type-specific thresholds may be worth exploring: a slightly higher threshold for BA pairs could bring precision closer to the BC level, at the cost of a modest recall reduction.
 
 ### 3.3 Cross-Validation Stability
 
@@ -232,7 +216,7 @@ GroupKFold cross-validation across 3 profile-grouped folds produced the followin
 | grad_boost | 0.9197 | 0.9137 | 0.9152 | 0.9162 | 0.0031 |
 | logreg | 0.8946 | 0.8890 | 0.8919 | 0.8919 | 0.0028 |
 
-The low standard deviations (0.003 or less) indicate stable performance across different profile groups. There are no signs of overfitting to specific geographic regions or provider categories in the training set. Note that these CV PR-AUC values are computed on the full labeled set at a fixed threshold, which differs from the holdout-only metrics in Section 3.1 — the two sets of numbers are complementary rather than directly comparable.
+The low standard deviations (0.003 or less) indicate stable performance across different profile groups. There are no signs of overfitting to specific geographic regions or provider categories in the training set. Note that these CV PR-AUC values are computed on the full labeled set at a fixed threshold, which differs from the holdout-only metrics in Section 3.1; the two are complementary rather than directly comparable.
 
 ### 3.4 Bootstrap Confidence Intervals
 
@@ -246,18 +230,18 @@ Cluster bootstrap resampling (400 samples, grouping by `profile_id`) was used to
 | Recall | 0.9982 | [0.9976, 0.9988] |
 | F1 | 0.9173 | [0.9118, 0.9223] |
 
-The cluster bootstrap (resampling profiles, not individual pairs) is the methodologically correct approach here because pairs from the same profile are statistically dependent — they share the same B-side feature values. Row-level bootstrap would underestimate uncertainty by treating these dependent samples as independent.
+The cluster bootstrap (resampling profiles, not individual pairs) is the methodologically correct approach here because pairs from the same profile are statistically dependent: they share the same B-side feature values. Row-level bootstrap would underestimate uncertainty by treating these dependent samples as independent.
 
-The very narrow confidence interval on ROC-AUC ([0.9991, 0.9993]) reflects the model's near-perfect discriminative ability at the overall level. The wider interval on precision (±0.009) is expected — precision is more sensitive to threshold choice and to the exact mix of easy vs. hard negatives in each bootstrap sample.
+The very narrow confidence interval on ROC-AUC ([0.9991, 0.9993]) reflects near-perfect discriminative ability at the overall level. The wider interval on precision (±0.009) is expected; precision is more sensitive to threshold choice and to the exact mix of easy vs. hard negatives in each bootstrap sample.
 
 ### 3.5 Statistical Model Comparison
 
 A paired cluster bootstrap test (same group resamples applied to both models) compared `best_saved` against a freshly-fit `grad_boost`:
 
-- **PR-AUC difference:** mean 0.0040, 95% CI [0.0024, 0.0055], p-value = 0.0 (two-sided) — **statistically significant**
-- **ROC-AUC difference:** mean 1.5e-5, 95% CI [−6.8e-5, 8.9e-5], p-value = 0.68 (two-sided) — **not statistically significant**
+- PR-AUC difference: mean 0.0040, 95% CI [0.0024, 0.0055], p-value = 0.0 (two-sided) — statistically significant
+- ROC-AUC difference: mean 1.5e-5, 95% CI [−6.8e-5, 8.9e-5], p-value = 0.68 (two-sided) — not statistically significant
 
-The `best_saved` model is statistically significantly better than the refit gradient booster on PR-AUC. The ROC-AUC difference is negligible and not significant — the confidence interval straddles zero, confirming that both models have essentially identical discriminative ability overall. The PR-AUC advantage of `best_saved` likely reflects minor fitting variation (random seed, internal state) between the serialized model and the freshly refit one, rather than a structural difference in model quality.
+The `best_saved` model is statistically significantly better than the refit gradient booster on PR-AUC. The ROC-AUC difference is negligible; the confidence interval straddles zero, confirming that both models have essentially identical discriminative ability overall. The PR-AUC advantage likely reflects minor fitting variation between the serialized model and the freshly refit one rather than a structural difference in model quality.
 
 ### 3.6 Threshold Sensitivity
 
@@ -275,9 +259,7 @@ The table of precision-target thresholds makes the trade-off explicit for deploy
 | 95% | ~0.894 | 0.958 | 0.215 |
 | 98% | ~0.895 | 0.998 | 0.134 |
 
-The steep recall drop when pushing above 90% precision is typical of hard record linkage problems. It reflects the existence of genuinely ambiguous pairs — providers with similar names and overlapping geographies — that can only be resolved with additional evidence (e.g., specialty matching, NPI lookups, human review).
-
----
+The steep recall drop when pushing above 90% precision is typical of hard record linkage problems. It reflects genuinely ambiguous pairs — providers with similar names and overlapping geographies — that can only be resolved with additional evidence (specialty matching, NPI lookups, human review).
 
 ## 4. Error Analysis & Failure Cases
 
@@ -292,13 +274,13 @@ False positives from the best model were categorized into interpretable failure 
 | Other | 653 | 68 | 721 |
 | **Total** | **2,979** | **218** | **3,197** |
 
-**Multiple practice locations** is the dominant failure mode, accounting for ~68% of errors. This happens when the same provider appears at two different addresses in the data — perhaps a physician who works at both a hospital and a private clinic. The model may classify these as matches (they share the same name, credentials, and state), but the address difference causes issues when the address features are weighted heavily. Conversely, it might also produce false negatives if address dissimilarity pushes the score below the threshold.
+Multiple practice locations is the dominant failure mode, accounting for ~68% of errors. This happens when the same provider appears at two different addresses in the data (a physician who works at both a hospital and a private clinic, for example). The model may classify these as matches (they share the same name, credentials, and state), but the address difference causes issues when address features are weighted heavily.
 
-The correct long-term fix is not a better model, but a better data representation: resolving providers to a single canonical identity and then linking all their practice locations to that identity. A post-processing step that clusters matches by provider identity and tolerates multiple addresses would directly address this failure mode.
+The correct long-term fix is not a better model but a better data representation: resolving providers to a single canonical identity and then linking all their practice locations to that identity. A post-processing step that clusters matches by provider identity and tolerates multiple addresses would directly address this failure mode.
 
-**Married or name change** accounts for ~10% of errors (315 cases). A provider who changed their last name (most commonly from marriage or divorce) will appear under two different last names across datasets collected at different times. The current feature set has no temporal dimension — it cannot reason about the fact that "Emily Johnson" in 2018 and "Emily Chen" in 2021 might be the same person. Adding alias tables or temporal name-matching logic would directly address this.
+Married or name change accounts for ~10% of errors (315 cases). A provider who changed their last name will appear under two different last names across datasets collected at different times. The current feature set has no temporal dimension; it cannot reason about the fact that "Emily Johnson" in 2018 and "Emily Chen" in 2021 might be the same person. Adding alias tables or temporal name-matching logic would directly address this.
 
-**Other errors** (~23%) likely include data entry errors severe enough to fall below similarity thresholds, unusual organization name formats, and genuinely ambiguous cases where two different providers have nearly identical names and practice in the same zip code.
+The remaining ~23% of errors likely include data entry errors severe enough to fall below similarity thresholds, unusual organization name formats, and genuinely ambiguous cases where two different providers have nearly identical names and practice in the same zip code.
 
 ### 4.2 By Pair Type
 
@@ -308,11 +290,9 @@ The higher proportion of "other" errors in BC likely reflects the greater divers
 
 ### 4.3 Active Learning as a Path Forward
 
-The pipeline includes an `active_learning_queue.csv` containing 200 pairs that the model is uncertain about — pairs where the predicted probability sits near the decision boundary. Manual review of these pairs would yield the highest return on labeling effort: resolving ambiguous cases would directly improve the model's behavior in exactly the regions where it currently makes mistakes.
+The pipeline produces an `active_learning_queue.csv` containing 200 pairs the model is uncertain about; pairs where the predicted probability sits near the decision boundary. Manual review of these cases would yield the highest return on labeling effort since they sit exactly where the model currently makes mistakes.
 
-This is a practical acknowledgment that the weak NPI-based labels cannot capture all the nuance in the data. Active learning is the systematic way to expand label coverage in the most informative direction.
-
----
+The weak NPI-based labels don't capture all the nuance in the data. Active learning is the systematic way to expand label coverage in the most informative direction.
 
 ## 5. Scalability Assessment & Optimization Recommendations
 
@@ -329,22 +309,22 @@ This is a substantial data volume for a Python-based pipeline, and it works beca
 
 ### 5.2 Blocking Scalability
 
-**The most important scalability design choice is blocking.** Without it, comparing all B profiles against all A providers would require 105,203 × 60,751 ≈ 6.4 billion pair comparisons. With blocking, this is reduced to ~1.9 million — a reduction of over 3,300x.
+The most important scalability design choice is blocking. Without it, comparing all B profiles against all A providers would require 105,203 × 60,751 ≈ 6.4 billion pair comparisons. With blocking, this is reduced to ~1.9 million, a reduction of over 3,300x.
 
-The blocking stage scales approximately linearly in the size of each dataset for the name-based strategies (sorting + windowed scan). The geo-based strategies scale with the number of distinct block keys, which grows sub-linearly. The exception is canopy clustering, which scales quadratically within each canopy — the `CANOPY_T1`/`CANOPY_T2` thresholds and block caps are the primary controls.
+The blocking stage scales approximately linearly in the size of each dataset for the name-based strategies (sorting + windowed scan). The geo-based strategies scale with the number of distinct block keys, which grows sub-linearly. The exception is canopy clustering, which scales quadratically within each canopy; the `CANOPY_T1`/`CANOPY_T2` thresholds and block caps are the primary controls.
 
-**Scalability concern for Dataset C.** The blocking key analysis reveals that `bk_state_last_fi` produces a maximum block size of 38,358 for C — identical with or without the first initial. This means the discriminative power of name-based keys breaks down at the tail of C's distribution. The `LAST_BLOCK_CAP=2000` is essential, and any expansion of Dataset C (e.g., adding historical records) would further worsen this tail behavior. Recommendations:
+Scalability concern for Dataset C: the blocking key analysis reveals that `bk_state_last_fi` produces a maximum block size of 38,358 for C. The `LAST_BLOCK_CAP=2000` is essential, and any expansion of Dataset C would worsen this tail behavior. Recommendations:
 
-- Add a **specialty-based blocking tier**: combining state + last_key + first_initial + specialty_code would dramatically reduce block sizes for common names. The entropy of specialty fields (2–4 bits) is lower than name keys, but combined with name it adds significant discrimination.
+- Add a **specialty-based blocking tier**: combining state + last_key + first_initial + specialty_code would dramatically reduce block sizes for common names. The entropy of specialty fields (2-4 bits) is lower than name keys, but combined with name it adds significant discrimination.
 - Consider **hierarchical blocking**: first partition by state, then within each state partition by first initial, then apply name-based or geo-based sub-blocking. This limits the worst-case block size in a more structured way.
 
 ### 5.3 Feature Computation Scalability
 
 The pairwise feature computation produces ~6M rows × 36 columns of floating-point data. The most expensive operations are:
-- **TF-IDF cosine similarity**: requires sparse matrix construction and dot products. Currently built once from the full corpus and applied pair-by-pair.
-- **Character 3-gram cosine**: hashed into 2^14 dimensions, computed on-the-fly per pair.
+- TF-IDF cosine similarity: requires sparse matrix construction and dot products. Currently built once from the full corpus and applied pair-by-pair.
+- Character 3-gram cosine: hashed into 2^14 dimensions, computed on-the-fly per pair.
 
-For datasets 10x larger (e.g., full annual Medicare ~24M records), the pair feature computation would need to shift from a row-by-row Python loop to a vectorized batch approach:
+For datasets 10x larger (full annual Medicare ~24M records), the pair feature computation would need to shift from a row-by-row Python loop to a vectorized batch approach:
 - Pre-compute name embeddings (TF-IDF or char-gram vectors) for all providers in A, B, and C once, store them.
 - For each candidate pair, retrieve the precomputed vectors and compute dot products in batch.
 - This reduces the per-pair cost from O(name_length) character operations to O(embedding_dimension) floating-point operations, and enables GPU acceleration for the dot product step.
@@ -353,14 +333,14 @@ For datasets 10x larger (e.g., full annual Medicare ~24M records), the pair feat
 
 The API (`api.py`) loads `best_model.joblib` and `providers_a.parquet` at startup. This works for a single-instance deployment but becomes a bottleneck under high load:
 
-- **`/match/pair`**: performs single-pair blocking + feature computation + model inference. Blocking against 60K A providers requires scanning or indexing — currently this likely uses state+zip lookup. For latency-sensitive use, an inverted index by (state, zip5, last_key) built at startup would reduce lookup time from O(n) to O(block_size).
-- **`/match/batch`**: multiple pairs processed together. Batch inference is more efficient than sequential single-pair inference for tree ensemble models.
+- `/match/pair`: performs single-pair blocking + feature computation + model inference. For latency-sensitive use, an inverted index by (state, zip5, last_key) built at startup would reduce lookup time from O(n) to O(block_size).
+- `/match/batch`: multiple pairs processed together. Batch inference is more efficient than sequential single-pair inference for tree ensemble models.
 
-For production scaling, the following changes are recommended:
+For production scaling:
 1. **Separate the blocking index from the model**: build and serialize a dict-based inverted index at pipeline time, load it alongside the model at API startup.
-2. **Add response caching** for repeated queries on the same (state, zip5, last_key) combination — common in batch workflows.
+2. **Add response caching** for repeated queries on the same (state, zip5, last_key) combination, common in batch workflows.
 3. **Async workers** (via `uvicorn` with multiple workers): the FastAPI application is already structured to support this.
-4. **Horizontal scaling**: because the model and A-table are read-only at inference time, multiple API replicas can be run behind a load balancer without any shared state concerns.
+4. **Horizontal scaling**: because the model and A-table are read-only at inference time, multiple API replicas can be run behind a load balancer without shared state concerns.
 
 ### 5.5 Pipeline Orchestration
 
@@ -371,17 +351,15 @@ The `main.py` runner executes steps sequentially as subprocesses. This is simple
 
 ### 5.6 Dynamic Model Adaptation
 
-Scenario 5 in the test suite addresses the case where the model encounters **concept drift** — a systematic shift in the data distribution over time (e.g., providers migrate between states, name formatting norms change, new data sources are onboarded with different cleaning conventions).
+Scenario 5 in the test suite addresses the case where the model encounters concept drift: a systematic shift in the data distribution over time (providers migrate between states, name formatting norms change, new data sources are onboarded with different cleaning conventions).
 
-The `PageHinkleyDetector` implemented in the test suite detects upward shifts in the model's error rate using a one-sided cumulative sum test. When drift is detected, the adaptation loop triggers model retraining on the most recent batch of data. This is a statistically sound, lightweight approach to drift detection that requires no distributional assumptions and responds quickly to abrupt changes.
+The `PageHinkleyDetector` implemented in the test suite detects upward shifts in the model's error rate using a one-sided cumulative sum test. When drift is detected, the adaptation loop triggers model retraining on the most recent batch of data.
 
 Key parameters:
 - `delta = 0.005`: the minimum shift magnitude considered meaningful (avoids false alarms from noise)
 - `lambda_ = 0.05`: the detection threshold (higher = slower to trigger, fewer false positives)
 
 For production deployment, the adaptation loop should be connected to the live matching stream, with drift detection running on a rolling window of recent match decisions and human-verified outcomes.
-
----
 
 ## 6. Testing Infrastructure
 
@@ -399,23 +377,15 @@ The test suite covers all five operational scenarios through a combination of un
 
 ### 6.2 Key Design Decisions in Testing
 
-**`test_features.py`** validates all six similarity functions and the full 31-column feature vector schema. These tests catch any regression in the core computation — if a refactor changes how Jaro-Winkler handles empty strings, or if the Soundex encoding changes for a specific character class, the test will fail before the model is retrained on corrupted features.
+`test_features.py` validates all six similarity functions and the full 31-column feature vector schema. These tests catch any regression in the core computation: if a refactor changes how Jaro-Winkler handles empty strings, or if the Soundex encoding changes for a specific character class, the test will fail before the model is retrained on corrupted features.
 
-**`test_blocking.py`** includes a test that verifies exact NPI blocking produces zero false negatives on the gold set — a hard invariant that must hold regardless of any other parameter changes. It also tests that sorted neighborhood and canopy blocking produce deterministic output with the configured window/threshold parameters.
+`test_blocking.py` includes a test that verifies exact NPI blocking produces zero false negatives on the gold set, a hard invariant that must hold regardless of any other parameter changes. It also tests that sorted neighborhood and canopy blocking produce deterministic output with the configured window/threshold parameters.
 
-**`test_api.py`** tests all three active endpoints (`/health`, `/match/pair`, `/stats`) including error paths: a payload with a missing required field should return a 422 (Unprocessable Entity), not a 500. These tests run against a lightweight mock of the model artifacts, so they do not require the full pipeline to have been run first.
+`test_api.py` tests all three active endpoints (`/health`, `/match/pair`, `/stats`) including error paths: a payload with a missing required field should return a 422 (Unprocessable Entity), not a 500. These tests run against a lightweight mock of the model artifacts, so they do not require the full pipeline to have been run first.
 
-**`test_dynamic_model_adaptation.py`** is the most sophisticated test file. It:
-- Verifies the `PageHinkleyDetector` does not trigger on a stable stream of uniformly distributed errors
-- Verifies that a sudden jump in error rate (from 0.1 to 0.9) triggers detection within a small number of samples
-- Verifies that `.reset()` correctly restores the detector to its initial state
-- Verifies that the adaptation loop completes all batches without error and triggers retraining when labels are flipped (simulating drift)
+`test_dynamic_model_adaptation.py` verifies the `PageHinkleyDetector` on stable vs. drifting streams, confirms that `.reset()` correctly restores detector state, and verifies that the adaptation loop triggers retraining when labels are flipped to simulate drift. These tests run entirely on synthetic data using `numpy` and `scikit-learn`, no file I/O or parquet loading required.
 
-These tests run entirely on synthetic data using `numpy` and `scikit-learn` — no file I/O, no parquet loading, no external dependencies. This makes them fast, reliable, and portable.
-
-**Test markers** separate fast unit tests (no marker) from slow integration tests (`@pytest.mark.slow`). This allows CI pipelines to run only unit tests on every commit and integration tests on a scheduled basis or before releases.
-
----
+Test markers separate fast unit tests (no marker) from slow integration tests (`@pytest.mark.slow`). This lets CI run only unit tests on every commit and integration tests on a scheduled basis or before releases.
 
 ## 7. API & Serving Layer
 
@@ -428,35 +398,29 @@ The REST API (`api.py`) exposes the trained linkage model as a service with four
 | `/match/batch` | POST | Batch linkage for multiple input profiles |
 | `/stats` | GET | Pipeline and model performance summary |
 
-**Startup behavior:** The model (`best_model.joblib`) and providers_a table are loaded at startup and held in memory. If either artifact is missing, all matching endpoints return a `503 Service Unavailable` with a clear message rather than a cryptic error. This fail-fast behavior is important for operational deployments — it makes the service state explicit and prevents it from returning incorrect results silently.
+On startup, the model (`best_model.joblib`) and providers_a table are loaded and held in memory. If either artifact is missing, all matching endpoints return a `503 Service Unavailable` with a clear message rather than crashing silently. This fail-fast behavior makes the service state explicit and prevents incorrect results from being returned.
 
-**Input validation:** The `/match/pair` endpoint accepts a structured JSON payload with required and optional fields. Required fields that are missing trigger a 422 response with field-level error details, handled automatically by FastAPI's Pydantic validation layer.
+Input validation: the `/match/pair` endpoint accepts a structured JSON payload with required and optional fields. Required fields that are missing trigger a 422 response with field-level error details, handled automatically by FastAPI's Pydantic validation layer.
 
-**Blocking at inference time:** Incoming profiles are blocked against the in-memory providers_a table using the same state+zip5 strategy used during pipeline construction. This means the API's candidate generation logic must stay synchronized with the pipeline's blocking logic — any change to blocking parameters needs to be reflected in both places.
-
----
+Blocking at inference time: incoming profiles are blocked against the in-memory providers_a table using the same state+zip5 strategy used during pipeline construction. Any change to blocking parameters needs to be reflected in both places to keep the API and pipeline consistent.
 
 ## 8. Summary & Conclusions
 
-This project implements a complete, production-grade record linkage pipeline for healthcare provider data. The design is sound at every layer:
+This project implements a complete, production-grade record linkage pipeline for healthcare provider data.
 
-**Statistically:** The EDA is thorough and drives concrete design choices — imputation strategy, blocking key selection, outlier detection approach, and missingness handling all flow from quantitative evidence rather than convention. The model evaluation uses cluster bootstrap confidence intervals, paired significance tests, and grouped cross-validation to produce estimates that are honest about the dependence structure in the data.
+The EDA is thorough and drives concrete design choices: imputation strategy, blocking key selection, outlier detection approach, and missingness handling all flow from quantitative evidence rather than convention. The model evaluation uses cluster bootstrap confidence intervals, paired significance tests, and grouped cross-validation to produce estimates that are honest about the dependence structure in the data.
 
-**Algorithmically:** The blocking layer reduces a potential 6-billion-pair problem to 6 million candidates without sacrificing recall. The combination of exact NPI joining, name-based blocking, sorted neighborhood, and canopy clustering provides overlapping coverage that is robust to the failure modes of any individual strategy. Block size caps prevent tail explosion on large datasets.
+The blocking layer reduces a potential 6-billion-pair problem to 6 million candidates without sacrificing recall. The combination of exact NPI joining, name-based blocking, sorted neighborhood, and canopy clustering provides overlapping coverage that is robust to the failure modes of any individual strategy. Block size caps prevent tail explosion on large datasets.
 
-**Machine learning:** The feature set is rich (31 features spanning character-level, token-level, phonetic, geographic, and domain-specific signals) and designed to be learnable. The training protocol addresses weak labels and class imbalance correctly. Three model families were evaluated — logistic regression, random forest, and gradient boosting. The best model (gradient boosting) achieves holdout PR-AUC of 0.985 and recall above 99.6% at 95% precision — strong performance for a real-world linkage problem.
+The feature set covers 31 dimensions spanning character-level, token-level, phonetic, geographic, and domain-specific signals. The training protocol addresses weak labels and class imbalance correctly. The best model (gradient boosting) achieves holdout PR-AUC of 0.985 and recall above 99.6% at 95% precision.
 
-**Operationally:** The pipeline is modular, testable, and serves predictions through a well-structured API. The test suite covers all five operational scenarios with a mix of unit and integration tests. The `PageHinkleyDetector` provides a lightweight but principled mechanism for detecting and responding to concept drift over time.
+The pipeline is modular, testable, and serves predictions through a well-structured API. The test suite covers all five operational scenarios with a mix of unit and integration tests. The `PageHinkleyDetector` provides a lightweight mechanism for detecting and responding to concept drift over time.
 
-**Primary areas for future development:**
+Areas for future development:
 1. Specialty-aware blocking to further reduce false positives from same-name different-specialty pairs
 2. Pair-type-specific thresholds to bring BA precision in line with BC
 3. Post-processing to handle multiple practice locations as a cluster rather than a disambiguation problem
 4. Alias tables or temporal name-change detection to reduce married/name-change errors
 5. Vectorized batch feature computation and precomputed embedding indices for scaling to full national Medicare datasets (~24M records)
 
-The pipeline as built is a complete, well-validated foundation. The remaining improvements are incremental refinements on top of a solid and well-understood baseline.
-
----
-
-*This report was generated from the project's notebooks, source code, and output artifacts. For full reproducibility, run `python main.py` followed by `python api.py` and open `http://127.0.0.1:8000/docs` to interact with the live system.*
+Numbers in this report are drawn from the pipeline's actual run outputs in `outputs/`. To reproduce: run `python main.py`, then `python api.py`. The API docs are at `http://127.0.0.1:8000/docs`.
