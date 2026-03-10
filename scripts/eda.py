@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 import math
 import numpy as np
 import pandas as pd
@@ -212,7 +213,7 @@ if "zip5" in pa.columns and "n_unique_name" in pa.columns:
         (pl.col("n_unique_name") > 1).alias("name_drift")
     ])
     ct = temp.group_by(["zip_missing", "name_drift"]).len().pivot(
-        values="len", index="zip_missing", columns="name_drift", aggregate_function="first"
+        values="len", index="zip_missing", on="name_drift", aggregate_function="first"
     ).fill_null(0)
 
     # chi-square
@@ -353,7 +354,7 @@ CANONICAL = {
         "providers_c": "provider_type_desc",
     }
 }
-def overlap_rate(a: pl.Series, b: pl.Series) -> float | None:
+def overlap_rate(a: pl.Series, b: pl.Series) -> Optional[float]:
     a = set([x for x in a.drop_nulls().to_list()])
     b = set([x for x in b.drop_nulls().to_list()])
     if len(a) == 0 or len(b) == 0:

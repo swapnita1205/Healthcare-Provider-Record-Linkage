@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -75,9 +76,17 @@ def run_step(step: str, project_root: Path) -> StepResult:
     try:
         if not (project_root / script).exists():
             raise FileNotFoundError(f"Missing script: {script}")
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(project_root) + os.pathsep + existing_pythonpath
+            if existing_pythonpath
+            else str(project_root)
+        )
         subprocess.run(
             [sys.executable, script],
             cwd=project_root,
+            env=env,
             check=True,
         )
         passed = True

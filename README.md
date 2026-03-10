@@ -74,8 +74,7 @@ python api.py
 
 API starts on:
 
-- `http://0.0.0.0:8000`
-- Swagger docs: `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/docs`
 
 ### API Endpoints
 
