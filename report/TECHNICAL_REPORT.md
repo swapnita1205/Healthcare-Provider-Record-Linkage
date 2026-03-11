@@ -373,7 +373,6 @@ The test suite covers all five operational scenarios through a combination of un
 | `test_blocking.py` | Unit | 1, 2, 4 (large-scale) |
 | `test_api.py` | Unit | 3 (multi-source integration) |
 | `test_pipeline.py` | Integration | 3, 4 |
-| `test_dynamic_model_adaptation.py` | Unit | 5 (concept drift) |
 
 ### 6.2 Key Design Decisions in Testing
 
@@ -382,8 +381,6 @@ The test suite covers all five operational scenarios through a combination of un
 `test_blocking.py` includes a test that verifies exact NPI blocking produces zero false negatives on the gold set, a hard invariant that must hold regardless of any other parameter changes. It also tests that sorted neighborhood and canopy blocking produce deterministic output with the configured window/threshold parameters.
 
 `test_api.py` tests all three active endpoints (`/health`, `/match/pair`, `/stats`) including error paths: a payload with a missing required field should return a 422 (Unprocessable Entity), not a 500. These tests run against a lightweight mock of the model artifacts, so they do not require the full pipeline to have been run first.
-
-`test_dynamic_model_adaptation.py` verifies the `PageHinkleyDetector` on stable vs. drifting streams, confirms that `.reset()` correctly restores detector state, and verifies that the adaptation loop triggers retraining when labels are flipped to simulate drift. These tests run entirely on synthetic data using `numpy` and `scikit-learn`, no file I/O or parquet loading required.
 
 Test markers separate fast unit tests (no marker) from slow integration tests (`@pytest.mark.slow`). This lets CI run only unit tests on every commit and integration tests on a scheduled basis or before releases.
 
