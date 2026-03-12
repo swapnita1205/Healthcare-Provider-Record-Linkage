@@ -349,18 +349,6 @@ The `main.py` runner executes steps sequentially as subprocesses. This is simple
 1. **No parallelism between independent steps.** The EDA and blocking steps are largely independent — EDA reads from the provider tables but does not affect blocking inputs. They could be run concurrently.
 2. **No incremental processing.** If providers_c is updated with 50,000 new records, the current pipeline re-runs the full blocking and feature computation from scratch. An incremental mode that identifies new/changed records and only recomputes affected pairs would significantly reduce runtime for operational deployments.
 
-### 5.6 Dynamic Model Adaptation
-
-Scenario 5 in the test suite addresses the case where the model encounters concept drift: a systematic shift in the data distribution over time (providers migrate between states, name formatting norms change, new data sources are onboarded with different cleaning conventions).
-
-The `PageHinkleyDetector` implemented in the test suite detects upward shifts in the model's error rate using a one-sided cumulative sum test. When drift is detected, the adaptation loop triggers model retraining on the most recent batch of data.
-
-Key parameters:
-- `delta = 0.005`: the minimum shift magnitude considered meaningful (avoids false alarms from noise)
-- `lambda_ = 0.05`: the detection threshold (higher = slower to trigger, fewer false positives)
-
-For production deployment, the adaptation loop should be connected to the live matching stream, with drift detection running on a rolling window of recent match decisions and human-verified outcomes.
-
 ## 6. Testing Infrastructure
 
 The test suite covers all five operational scenarios through a combination of unit and integration tests.
