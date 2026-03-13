@@ -204,15 +204,6 @@ Three separate model approaches were built and tested: logistic regression, rand
 
 The system is auditable. Every match decision is backed by a 31-feature vector that explains exactly which signals drove the decision: name similarity scores, geographic match, credential overlap, etc. A compliance reviewer can inspect any individual match and see a principled basis for it.
 
-**Q: What are the risks?**
-
-The system is not perfect. Approximately 3,197 errors were identified and categorized in testing:
-- 2,161 errors (68%) come from providers with multiple practice locations, the same person at different addresses
-- 315 errors (10%) come from name changes (marriage, legal name change)
-- 721 errors (23%) are miscellaneous difficult cases
-
-These are understandable, interpretable failure modes, not random noise. They can be addressed with targeted improvements (see Section 6).
-
 ### For Compliance & Fraud Analytics Teams
 
 **Q: How do I use this to build an investigation queue?**
@@ -264,13 +255,6 @@ Yes, with engineering effort. The pipeline's design is modular. A new data sourc
 - Memory: the full pipeline requires holding ~6M pairs × 36 features in memory at peak. Approximately 8-16 GB RAM recommended for comfortable operation at current scale
 - Storage: Parquet outputs total approximately 2-5 GB at current data volumes
 - API: FastAPI with uvicorn; runs on any standard Python web host; no external dependencies at inference time beyond the model artifact and provider table
-
-**Q: How do we keep it accurate over time?**
-
-The pipeline includes a `PageHinkleyDetector`, a statistical change-detection algorithm that monitors the model's error rate on incoming data. When the error rate shifts beyond a configurable threshold, the system flags for retraining. In practice, model refreshes would be triggered by:
-- Major updates to the underlying datasets (new fiscal year Medicare data, PECOS quarterly updates)
-- Significant changes in provider mix (e.g., after a large health system acquisition adds many new providers)
-- Drift detection alerts from the monitoring system
 
 **Q: What happens if the model file is missing?**
 

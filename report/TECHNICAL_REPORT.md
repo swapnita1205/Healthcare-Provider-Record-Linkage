@@ -399,7 +399,7 @@ The blocking layer reduces a potential 6-billion-pair problem to 6 million candi
 
 The feature set covers 31 dimensions spanning character-level, token-level, phonetic, geographic, and domain-specific signals. The training protocol addresses weak labels and class imbalance correctly. The best model (gradient boosting) achieves holdout PR-AUC of 0.985 and recall above 99.6% at 95% precision.
 
-The pipeline is modular, testable, and serves predictions through a well-structured API. The test suite covers all five operational scenarios with a mix of unit and integration tests. The `PageHinkleyDetector` provides a lightweight mechanism for detecting and responding to concept drift over time.
+The pipeline is modular, testable, and serves predictions through a well-structured API. The test suite covers all operational scenarios with a mix of unit and integration tests.
 
 Areas for future development:
 1. Specialty-aware blocking to further reduce false positives from same-name different-specialty pairs
