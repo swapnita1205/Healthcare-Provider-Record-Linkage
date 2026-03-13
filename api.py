@@ -13,11 +13,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from matching_utils import FEATURE_COLUMNS, build_idf_from_texts, features_row, safe_predict_proba, zip3
+from matching_utils import FEATURE_COLUMNS, build_idf_from_texts, features_row, is_org_like, safe_predict_proba, zip3
 
 OUT_DIR = Path("outputs")
 MODEL_PATH = OUT_DIR / "models" / "best_model.joblib"
 METRICS_PATH = OUT_DIR / "models" / "metrics.json"
+THRESHOLDS_PATH = OUT_DIR / "models" / "thresholds.json"
 PROVIDERS_A_PATH = OUT_DIR / "providers_a.parquet"
 PROVIDERS_B_PATH = OUT_DIR / "providers_b.parquet"
 PROVIDERS_C_PATH = OUT_DIR / "providers_c.parquet"
@@ -131,6 +132,8 @@ async def lifespan(app: FastAPI):
     app.state.model_loaded = False
     app.state.model_name = None
     app.state.metrics = {}
+    app.state.threshold_best_f1 = 0.5
+    app.state.threshold_prec_target = 0.5
     app.state.providers_a = pl.DataFrame()
     app.state.providers_b_count = 0
     app.state.providers_c_count = 0
@@ -160,6 +163,11 @@ async def lifespan(app: FastAPI):
 
     app.state.metrics = _safe_read_json(METRICS_PATH)
     app.state.model_name = app.state.metrics.get("best_model")
+
+    thresholds_data = _safe_read_json(THRESHOLDS_PATH)
+    thr = thresholds_data.get("thresholds", {})
+    app.state.threshold_best_f1 = float(thr.get("best_f1_threshold", 0.5))
+    app.state.threshold_prec_target = float(thr.get("precision_target_threshold", 0.5))
 
     if MODEL_PATH.exists():
         app.state.model = joblib.load(MODEL_PATH)
@@ -202,16 +210,39 @@ def match_pair(record: ProviderRecord) -> PairMatchResponse:
     if candidates_df.height == 0:
         return PairMatchResponse(profile_id=record.profile_id, matches=[])
 
+    # Determine whether the incoming record is an individual person (not an org).
+    # Used to hard-filter org/person type conflicts before scoring.
+    incoming_is_person = bool(record.first_name) and not (
+        is_org_like(record.first_name) or is_org_like(record.last_name)
+    )
+
     cand_rows = candidates_df.to_dicts()
     feature_rows: list[dict[str, Union[float, int]]] = [
         _build_feature_row(record, cand, app.state.idf_name) for cand in cand_rows
     ]
 
-    x_mat = np.array([[float(feat.get(c, 0.0)) for c in FEATURE_COLUMNS] for feat in feature_rows], dtype=float)
+    # Hard filter: when the incoming record is clearly a person, drop any candidate
+    # that is an organization (org_vs_person_conflict = 1).  The model learned
+    # nothing from this feature (zero permutation importance) so we enforce it
+    # as a deterministic rule here.
+    filtered_cands = [
+        (cand, feat)
+        for cand, feat in zip(cand_rows, feature_rows)
+        if not (incoming_is_person and feat.get("org_vs_person_conflict", 0) == 1)
+    ]
+    if not filtered_cands:
+        return PairMatchResponse(profile_id=record.profile_id, matches=[])
+
+    filtered_cand_rows, filtered_feat_rows = zip(*filtered_cands)
+
+    x_mat = np.array(
+        [[float(feat.get(c, 0.0)) for c in FEATURE_COLUMNS] for feat in filtered_feat_rows],
+        dtype=float,
+    )
     probs = safe_predict_proba(app.state.model, x_mat)
 
     matches: list[MatchCandidate] = []
-    for cand, feat, prob in zip(cand_rows, feature_rows, probs):
+    for cand, feat, prob in zip(filtered_cand_rows, filtered_feat_rows, probs):
         similarity_score = float(feat.get("sim_jw_fullname", 0.0))
         matches.append(
             MatchCandidate(
@@ -226,7 +257,11 @@ def match_pair(record: ProviderRecord) -> PairMatchResponse:
             )
         )
 
-    top5 = sorted(matches, key=lambda m: m.match_probability, reverse=True)[:5]
+    # Primary sort: match_probability desc; secondary: similarity_score (sim_jw_fullname) desc
+    # so that when calibrated probabilities are still close, the better name match wins.
+    # Always return top 5 — the caller can apply the precision_target threshold from
+    # GET /stats themselves if they want to filter to high-confidence matches only.
+    top5 = sorted(matches, key=lambda m: (m.match_probability, m.similarity_score), reverse=True)[:5]
     return PairMatchResponse(profile_id=record.profile_id, matches=top5)
 
 
@@ -255,6 +290,10 @@ def stats() -> dict[str, Any]:
         "model_name": app.state.model_name,
         "pr_auc": pr_auc,
         "metrics_available": bool(metrics),
+        "thresholds": {
+            "best_f1": app.state.threshold_best_f1,
+            "precision_target": app.state.threshold_prec_target,
+        },
     }
 
 

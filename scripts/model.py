@@ -22,7 +22,7 @@ from sklearn.metrics import (
 from sklearn.inspection import permutation_importance
 import joblib
 
-from matching_utils import safe_predict_proba
+from matching_utils import FEATURE_COLUMNS, safe_predict_proba
 
 # -----------------------------
 # Config
@@ -51,8 +51,11 @@ N_ITER_RF = 12
 UNLABELED_SAMPLE = 400_000
 ACTIVE_QUERY_N = 200
 
-# Calibration
-CALIBRATE_LINEAR_MODELS = True
+# Calibration — always calibrate every model; tree models use isotonic, linear use sigmoid
+CALIBRATE_MODELS = True
+
+# Org-vs-person negative oversampling multiplier on top of hard negatives
+ORG_PERSON_NEG_MULTIPLIER = 2
 
 # -----------------------------
 # Helpers
@@ -109,7 +112,10 @@ ba_cols = set(ba_head.columns)
 bc_cols = set(bc_head.columns)
 
 NON_FEATURES = {"profile_id", "pass", "block_key", "label_weak_npi", "npi_a", "npi_c"}
-feature_cols = sorted(list((ba_cols & bc_cols) - NON_FEATURES))
+# Use the canonical order from matching_utils.FEATURE_COLUMNS so that the
+# feature indices the model learns match exactly what api.py passes at inference.
+available = (ba_cols & bc_cols) - NON_FEATURES
+feature_cols = [c for c in FEATURE_COLUMNS if c in available]
 
 print("Using #features:", len(feature_cols))
 
@@ -175,7 +181,7 @@ def lazy_sample_n(lf: pl.LazyFrame, n: int, seed: int) -> pl.LazyFrame:
     chosen_df = pl.DataFrame({"_row_id": chosen})
 
     return (
-        lf.with_row_count("_row_id")
+        lf.with_row_index("_row_id")
           .join(chosen_df.lazy(), on="_row_id", how="inner")
           .drop("_row_id")
     )
@@ -194,8 +200,21 @@ neg_cnt = neg.select(pl.len()).collect().item()
 rand_take = min(rand_target_total, neg_cnt)
 rand_sample = lazy_sample_n(neg, rand_take, RANDOM_STATE + 1)
 
-train_lf = pl.concat([pos, hard_sample, rand_sample], how="vertical")
-train_df = train_lf.collect(streaming=True)
+# Org-vs-person conflict negatives: the model ignores org_vs_person_conflict (zero perm importance)
+# because these pairs are underrepresented.  Oversample them explicitly so the model learns
+# that a person-vs-org mismatch is a strong negative signal.
+if "org_vs_person_conflict" in feature_cols:
+    org_person_pool = neg.filter(pl.col("org_vs_person_conflict") == 1)
+    org_person_cnt = org_person_pool.select(pl.len()).collect().item()
+    org_person_take = min(int(hard_target_total * ORG_PERSON_NEG_MULTIPLIER), org_person_cnt)
+    org_person_sample = lazy_sample_n(org_person_pool, org_person_take, RANDOM_STATE + 3)
+    print(f"Org-vs-person negatives added: {org_person_take} (pool size: {org_person_cnt})")
+else:
+    org_person_sample = neg.limit(0)
+    print("org_vs_person_conflict not in features; skipping oversampling")
+
+train_lf = pl.concat([pos, hard_sample, rand_sample, org_person_sample], how="vertical")
+train_df = train_lf.collect(engine="streaming")
 print("Train rows:", train_df.height, "Pos rate:", float(train_df["y"].mean()))
 
 train_pdf = train_df.to_pandas()
@@ -279,12 +298,11 @@ searches = {
 
 
 def maybe_calibrate(name: str, estimator):
-    if not CALIBRATE_LINEAR_MODELS:
+    if not CALIBRATE_MODELS:
         return estimator
-    # only calibrate linear models; RF and GB have native predict_proba
-    if name == "logreg":
-        return CalibratedClassifierCV(estimator, method="sigmoid", cv=3)
-    return estimator
+    # LR: Platt sigmoid; tree models: isotonic regression (more flexible, better for GBM/RF)
+    method = "sigmoid" if name == "logreg" else "isotonic"
+    return CalibratedClassifierCV(estimator, method=method, cv=3)
 
 # -----------------------------
 # Compare models on holdout
@@ -317,7 +335,7 @@ for name, search in searches.items():
         "holdout_recall_at_prec_target": m_prec["recall"],
         "best_f1_threshold": thr["best_f1_threshold"],
         "precision_target_threshold": thr["precision_target_threshold"],
-        "calibrated": bool(CALIBRATE_LINEAR_MODELS and name == "logreg"),
+        "calibrated": bool(CALIBRATE_MODELS),
     })
 
     details[name] = {
@@ -337,14 +355,19 @@ with open(MODEL_DIR / "cv_metrics.json", "w") as f:
 best_model_name = results_df.iloc[0]["model"]
 best_est = searches[best_model_name].best_estimator_
 
-best_est.fit(X, y)
+# Final model: CalibratedClassifierCV(cv=3) trained on ALL labeled data.
+# The calibration layer is fitted via 3-fold CV internally, avoiding leakage.
 best_model = maybe_calibrate(best_model_name, best_est)
 best_model.fit(X, y)
 
 joblib.dump(best_model, MODEL_DIR / "best_model.joblib")
 
-# Thresholds computed on holdout for reporting
-best_scores = safe_predict_proba(best_model, X_test)
+# Thresholds: evaluate on the held-out test split using a model trained only on X_train.
+# This avoids leakage since the final model was fitted on X (includes X_test).
+best_est_for_thr = searches[best_model_name].best_estimator_
+thr_model = maybe_calibrate(best_model_name, best_est_for_thr)
+thr_model.fit(X_train, y_train)
+best_scores = safe_predict_proba(thr_model, X_test)
 best_thr = tune_threshold(y_test, best_scores, target_precision=0.95)
 
 with open(MODEL_DIR / "thresholds.json", "w") as f:
@@ -354,7 +377,7 @@ metrics_out = {
     "train_rows": int(len(train_pdf)),
     "pos_rate_train": float(y.mean()),
     "best_model": best_model_name,
-    "calibrated": bool(CALIBRATE_LINEAR_MODELS and best_model_name == "logreg"),
+    "calibrated": bool(CALIBRATE_MODELS),
     "holdout": {
         "best_f1": metrics_at(y_test, best_scores, best_thr["best_f1_threshold"]),
         "precision_target": metrics_at(y_test, best_scores, best_thr["precision_target_threshold"]),
@@ -367,20 +390,18 @@ with open(MODEL_DIR / "metrics.json", "w") as f:
 # -----------------------------
 # Interpretability
 # -----------------------------
-# LR coefficients
+# LR coefficients — extract from a fresh LR trained on all data (not calibrated wrapper)
 lr_best = lr_search.best_estimator_
 lr_best.fit(X, y)
-lr_cal = maybe_calibrate("logreg", lr_best)
-lr_cal.fit(X, y)
 
 coef_model = lr_best
 coef = coef_model.named_steps["clf"].coef_.flatten()
 pd.DataFrame({"feature": feature_cols, "coef": coef}).sort_values("coef", ascending=False)\
   .to_csv(MODEL_DIR / "feature_importance_lr.csv", index=False)
 
-# Permutation importance for the best model on holdout
+# Permutation importance: use thr_model (trained on X_train only) evaluated on X_test
 perm = permutation_importance(
-    best_model, X_test, y_test,
+    thr_model, X_test, y_test,
     n_repeats=5, random_state=RANDOM_STATE, scoring="average_precision"
 )
 pd.DataFrame({
@@ -449,7 +470,7 @@ print("Active learning curve saved:", MODEL_DIR / "active_learning_curve.csv")
 # Also export the current uncertainty queue from the full unlabeled pool
 # (pairs without any NPI-based label — candidates for human review)
 unlabeled = df_scan.filter(pl.col("label_weak_npi").is_null()).drop("label_weak_npi")
-unl_sample = lazy_sample_n(unlabeled, UNLABELED_SAMPLE, RANDOM_STATE).collect(streaming=True)
+unl_sample = lazy_sample_n(unlabeled, UNLABELED_SAMPLE, RANDOM_STATE).collect(engine="streaming")
 unl_pdf = unl_sample.to_pandas()
 X_unl = unl_pdf[feature_cols].values
 
